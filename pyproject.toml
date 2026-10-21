@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mk-studio"
+version = "0.1.0"
+description = "Mar and Kuku local deterministic production studio CLI and Palmier MCP pipeline"
+readme = "docs/MK_Production_Studio_Requirements_v001.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "pydantic>=2.9.0",
+    "pillow>=10.4.0",
+    "mcp>=1.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+]
+
+[project.scripts]
+mk-studio = "mk_studio.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mk_studio"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"
