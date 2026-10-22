@@ -228,6 +228,7 @@ class GoogleFlowMusicAdapter:
         self,
         track_name: str,
         *,
+        track_index: int = 0,
         download_format: str = "WAV",
         destination_dir: Path | str | None = None,
         timeout_seconds: float = 60.0,
@@ -246,6 +247,7 @@ class GoogleFlowMusicAdapter:
         before_files = set(downloads_dir.glob("*.wav")) | set(downloads_dir.glob("*.mp3")) | set(downloads_dir.glob("*.zip"))
         escaped_track = json.dumps(track_name)
         escaped_fmt = json.dumps(download_format.upper())
+        idx_val = int(track_index)
 
         with CdpWebSocketClient(ws_url) as ws:
             ws.call("Runtime.enable")
@@ -262,13 +264,14 @@ class GoogleFlowMusicAdapter:
                         const track = {escaped_track};
                         const btns = Array.from(document.querySelectorAll(`button[aria-label="More options for ${{track}}"]`));
                         if (btns.length === 0) return {{ok: false, error: "More options button not found for track: " + track}};
-                        const btn = btns[0];
+                        const idx = {idx_val} < btns.length ? {idx_val} : 0;
+                        const btn = btns[idx];
                         btn.scrollIntoView({{behavior: "instant", block: "center"}});
                         btn.dispatchEvent(new PointerEvent("pointerdown", {{bubbles: true, cancelable: true}}));
                         btn.dispatchEvent(new MouseEvent("mousedown", {{bubbles: true, cancelable: true}}));
                         btn.dispatchEvent(new MouseEvent("mouseup", {{bubbles: true, cancelable: true}}));
                         btn.dispatchEvent(new MouseEvent("click", {{bubbles: true, cancelable: true}}));
-                        return {{ok: true, buttonAria: btn.getAttribute("aria-label")}};
+                        return {{ok: true, buttonAria: btn.getAttribute("aria-label"), chosenIndex: idx, totalCount: btns.length}};
                     }})()
                     """,
                     "returnByValue": True,

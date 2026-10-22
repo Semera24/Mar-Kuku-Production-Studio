@@ -180,39 +180,65 @@ def transcribe_with_manus(
     segments: list[TimedDialogueSegment] = []
     invalid_segments: list[dict[str, Any]] = []
 
-    tc_pattern = re.compile(
-        r"\[?(\d{2}):(\d{2}(?:\.\d{1,3})?)\s*(?:-|–|to)\s*(\d{2}):(\d{2}(?:\.\d{1,3})?)\]?\s*([A-Za-z0-9_]+)\s*:\s*(.+)",
-        re.IGNORECASE,
-    )
+    # Try parsing JSON segments if present in raw_output
+    json_match = re.search(r"\{\s*\"duration\".*?\"segments\"\s*:\s*(\[.*?\])\s*\}", raw_output, re.DOTALL)
+    if json_match:
+        try:
+            seg_list = json.loads(json_match.group(1))
+            for item in seg_list:
+                s_val = float(item.get("start", 0.0))
+                e_val = float(item.get("end", 0.0))
+                txt_val = str(item.get("text", "")).strip()
+                if 0.0 <= s_val < e_val <= (audio_artifact.duration_seconds + 3.0) and txt_val:
+                    segments.append(
+                        TimedDialogueSegment(
+                            speaker="MAR",
+                            text=txt_val,
+                            start_s=round(s_val, 3),
+                            end_s=round(e_val, 3),
+                        )
+                    )
+        except Exception:
+            pass
 
-    for line in raw_output.splitlines():
-        m = tc_pattern.search(line.strip())
-        if m:
-            m1, s1 = int(m.group(1)), float(m.group(2))
-            m2, s2 = int(m.group(3)), float(m.group(4))
-            start_s = round(m1 * 60.0 + s1, 3)
-            end_s = round(m2 * 60.0 + s2, 3)
-            spk = m.group(5).upper()
-            txt = m.group(6).strip().strip('"')
+    # If no JSON segments found, parse timestamped lines: e.g. [00:01.200 - 00:03.500] MAR: Hello!
+    if not segments:
+        tc_pattern = re.compile(
+            r"\[?(\d{2}):(\d{2}(?:\.\d{1,3})?)\s*(?:-|–|to)\s*(\d{2}):(\d{2}(?:\.\d{1,3})?)\]?\s*(?:([A-Za-z0-9_]+)\s*:\s*)?(.+)",
+            re.IGNORECASE,
+        )
 
-            # Validate timestamp bounds: 0.0 <= start < end <= duration + 2.0s buffer
-            if start_s >= end_s or start_s < 0.0 or end_s > (audio_artifact.duration_seconds + 3.0):
-                invalid_segments.append(
-                    {
-                        "line": line.strip(),
-                        "reason": f"Timestamp bounds out of range: start={start_s}s, end={end_s}s, max_dur={audio_artifact.duration_seconds}s",
-                    }
-                )
+        for line in raw_output.splitlines():
+            # Skip prose notes with ranges like (00:48.3–01:04.6)
+            if "timing may be inaccurate" in line or "section’s timing" in line:
                 continue
+            m = tc_pattern.search(line.strip())
+            if m:
+                m1, s1 = int(m.group(1)), float(m.group(2))
+                m2, s2 = int(m.group(3)), float(m.group(4))
+                start_s = round(m1 * 60.0 + s1, 3)
+                end_s = round(m2 * 60.0 + s2, 3)
+                spk = (m.group(5) or "MAR").upper()
+                txt = m.group(6).strip().strip('"')
 
-            segments.append(
-                TimedDialogueSegment(
-                    speaker=spk,
-                    text=txt,
-                    start_s=start_s,
-                    end_s=end_s,
+                # Validate timestamp bounds: 0.0 <= start < end <= duration + 2.0s buffer
+                if start_s >= end_s or start_s < 0.0 or end_s > (audio_artifact.duration_seconds + 3.0):
+                    invalid_segments.append(
+                        {
+                            "line": line.strip(),
+                            "reason": f"Timestamp bounds out of range: start={start_s}s, end={end_s}s, max_dur={audio_artifact.duration_seconds}s",
+                        }
+                    )
+                    continue
+
+                segments.append(
+                    TimedDialogueSegment(
+                        speaker=spk,
+                        text=txt,
+                        start_s=start_s,
+                        end_s=end_s,
+                    )
                 )
-            )
 
     return ManusTimestampedTranscript(
         raw_response=raw_output,
