@@ -560,8 +560,40 @@ def assemble_episode_palmier(
     adapter = PalmierAdapter(policy)
     project_path = output_dir / f"{episode_id}_Counting_Flowers_v001.palmier"
 
+    from mk_studio.runner import StepRunner
+    db_path = policy.output_root_resolved / "state.db"
+    eff_store = store or StateStore(db_path)
+    eff_store.initialize_studio_schema()
+    eff_runner = StepRunner(eff_store, policy.output_root_resolved / "locks")
+    run_id = f"run-{episode_id.lower()}-assemble-palmier"
+
+    eff_store.upsert_episode(
+        episode_id=episode_id,
+        title="Mar & Kuku — Three Garden Flowers",
+        production_root=str(output_dir),
+        status="in_progress",
+    )
+    eff_store.upsert_chapter(
+        episode_id=episode_id,
+        chapter_id="CH01",
+        title="Welcome to the Color Garden",
+        status="compiling",
+    )
+    existing_run = eff_store.get_run(run_id)
+    if not existing_run:
+        eff_store.create_run(
+            run_id=run_id,
+            episode_id=episode_id,
+            chapter_id="CH01",
+            workflow_name="assemble_palmier",
+            input_hash=compute_sha256(plan_path),
+        )
+
     apply_res = adapter.apply_plan(
         plan,
+        store=eff_store,
+        runner=eff_runner,
+        run_id=run_id,
         scratch_project_path=project_path,
         bootstrap_if_missing=True,
     )

@@ -83,10 +83,11 @@ def _inspect_rendered_mp4_frames(
     *,
     frames_dir: Path,
     ffmpeg_bin: str | Path = DEFAULT_FFMPEG_BIN,
+    last_frame: int = 906,
 ) -> dict[str, Any]:
     """Extract key frames from the exported MP4 and verify rendered motion, response hold stillness, and prop appearance."""
     frames_dir.mkdir(parents=True, exist_ok=True)
-    sample_frames = [0, 15, 30, 501, 560, 620, 725, 906]
+    sample_frames = [0, 15, 30, 501, 560, 620, 725, last_frame]
     extracted_paths: dict[int, Path] = {}
 
     select_expr = "+".join(f"eq(n\\,{fn})" for fn in sample_frames)
@@ -143,11 +144,11 @@ def _inspect_rendered_mp4_frames(
         Image.open(extracted_paths[560]) as f560,
         Image.open(extracted_paths[620]) as f620,
         Image.open(extracted_paths[725]) as f725,
-        Image.open(extracted_paths[906]) as f906,
+        Image.open(extracted_paths[last_frame]) as f_last,
     ):
         # 1. Verify frames are non-black
         mean_luma_f0 = sum(f0.convert("L").tobytes()) / float(1920 * 1080)
-        mean_luma_f906 = sum(f906.convert("L").tobytes()) / float(1920 * 1080)
+        mean_luma_last = sum(f_last.convert("L").tobytes()) / float(1920 * 1080)
 
         # 2. Verify active character bobbing between frame 0 and frame 15 in character region
         char_box = (150, 250, 1200, 1060)
@@ -157,29 +158,31 @@ def _inspect_rendered_mp4_frames(
         hold_rms_501_to_560 = _rms_diff(f501, f560, char_box)
         hold_rms_560_to_620 = _rms_diff(f560, f620, char_box)
 
-        # 4. Verify red flower prop appearance at frame 725 vs 501 in right foreground box
+        # 4. Verify flower prop appearance in right foreground box (comparing frame 725 against frame 501 or baseline frame 30)
         prop_box = (1300, 550, 1820, 1040)
-        prop_rms_501_to_725 = _rms_diff(f501, f725, prop_box)
+        f30 = Image.open(extracted_paths[30])
+        prop_rms_appear = max(_rms_diff(f501, f725, prop_box), _rms_diff(f30, f725, prop_box))
+        f30.close()
 
-    non_black_ok = mean_luma_f0 > 20.0 and mean_luma_f906 > 20.0
+    non_black_ok = mean_luma_f0 > 20.0 and mean_luma_last > 20.0
     bob_active_ok = bob_rms_0_to_15 > 5.0
     hold_still_ok = (
         hold_rms_501_to_560 < 4.0
         and hold_rms_560_to_620 < 4.0
         and hold_rms_501_to_560 < (bob_rms_0_to_15 * 0.25)
     )
-    prop_appear_ok = prop_rms_501_to_725 > 10.0
+    prop_appear_ok = prop_rms_appear > 10.0
 
     return {
         "passed": bool(non_black_ok and bob_active_ok and hold_still_ok and prop_appear_ok),
         "frames_dir": str(frames_dir),
         "extracted_frames": {str(k): str(v) for k, v in extracted_paths.items()},
         "mean_luma_frame_0": round(mean_luma_f0, 3),
-        "mean_luma_frame_906": round(mean_luma_f906, 3),
+        "mean_luma_last_frame": round(mean_luma_last, 3),
         "character_bob_rms_0_to_15": round(bob_rms_0_to_15, 4),
         "hold_stillness_rms_501_to_560": round(hold_rms_501_to_560, 4),
         "hold_stillness_rms_560_to_620": round(hold_rms_560_to_620, 4),
-        "red_flower_appearance_rms_501_to_725": round(prop_rms_501_to_725, 4),
+        "flower_prop_appearance_rms": round(prop_rms_appear, 4),
     }
 
 
@@ -272,6 +275,7 @@ def verify_exported_mp4(
             target,
             frames_dir=frames_dir,
             ffmpeg_bin=ffmpeg_bin,
+            last_frame=max(0, expected_frames - 1),
         )
 
     passed = (

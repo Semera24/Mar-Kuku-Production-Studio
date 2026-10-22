@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 import time
 import urllib.error
 import urllib.request
@@ -14,6 +15,7 @@ from typing import Any, Callable
 import jsonschema
 
 from mk_studio.config import (
+    DEFAULT_FFMPEG_BIN,
     DEFAULT_PALMIER_MCP_URL,
     PathPolicyError,
     RootPolicy,
@@ -1264,3 +1266,102 @@ class PalmierAdapter:
         raise PalmierEditorError(
             f"Timed out waiting for terminal 'completed' status on Palmier export job {job_id} ({out_resolved})"
         )
+
+    def render_timeline_plan_to_mp4(
+        self,
+        plan: TimelinePlan,
+        output_mp4_path: str | Path,
+    ) -> Path:
+        """Render a TimelinePlan into a 1080p30 H.264/AAC MP4 via deterministic compositor."""
+        out_resolved = self.policy.resolve_output(Path(output_mp4_path), overwrite=True, create_parents=True)
+
+        # High-performance, exact deterministic compositor via FFmpeg
+        bg_clip = None
+        audio_clip = None
+        overlay_clips = []
+
+        for track in plan.tracks:
+            if track.track_type == "audio" and track.clips:
+                audio_clip = track.clips[0]
+            elif track.track_type == "video":
+                for c in track.clips:
+                    if "bg" in c.track_name.lower() or "background" in c.track_name.lower():
+                        bg_clip = c
+                    else:
+                        overlay_clips.append(c)
+
+        if not bg_clip or not Path(bg_clip.source_path).is_file():
+            # Fallback to first video clip
+            bg_clip = overlay_clips[0] if overlay_clips else None
+        if not audio_clip or not Path(audio_clip.source_path).is_file():
+            raise PalmierEditorError(f"TimelinePlan {plan.plan_id} missing valid audio source clip")
+
+        duration_s = plan.total_frames / 30.0
+
+        # Construct FFmpeg compositing pipeline
+        cmd = [
+            DEFAULT_FFMPEG_BIN,
+            "-y",
+            "-loop", "1",
+            "-i", str(bg_clip.source_path),
+            "-i", str(audio_clip.source_path),
+        ]
+
+        # Add overlay inputs
+        filter_inputs = []
+        for idx, c in enumerate(overlay_clips):
+            cmd.extend(["-loop", "1", "-i", str(c.source_path)])
+            filter_inputs.append((idx + 2, c))
+
+        # Build filter_complex
+        fc = [f"[0:v]scale=1920:1080,fps=30[v0];"]
+        last_v = "v0"
+
+        for f_idx, (in_num, clip) in enumerate(filter_inputs):
+            tf = clip.transform
+            t_w = max(10, int(round(tf.width * 1920)))
+            t_h = max(10, int(round(tf.height * 1080)))
+            if clip.position_keyframes and len(clip.position_keyframes[0].values) >= 2:
+                top_x = max(0, int(round(clip.position_keyframes[0].values[0] * 1920)))
+                top_y = max(0, int(round(clip.position_keyframes[0].values[1] * 1080)))
+            else:
+                top_x = max(0, int(round((tf.centerX - tf.width / 2.0) * 1920)))
+                top_y = max(0, int(round((tf.centerY - tf.height / 2.0) * 1080)))
+            f_start = clip.start_frame
+            f_end = max(clip.start_frame, clip.end_frame - 1)
+
+            # Grounded bobbing animation (stillness during hold window)
+            c_key = clip.clip_key.lower()
+            if "hold" in c_key or "prop" in c_key:
+                y_expr = str(top_y)
+            elif "mar" in c_key:
+                y_expr = f"({top_y}+18*sin(2*PI*n/60))"
+            elif "kuku" in c_key:
+                y_expr = f"({top_y}+15*sin(2*PI*(n-15)/50))"
+            else:
+                y_expr = str(top_y)
+
+            fc.append(f"[{in_num}:v]scale={t_w}:{t_h}[sc{f_idx}];")
+            out_v = f"v{f_idx+1}"
+            fc.append(
+                f"[{last_v}][sc{f_idx}]overlay={top_x}:{y_expr}:enable='between(n,{f_start},{f_end})'[{out_v}];"
+            )
+            last_v = out_v
+
+        # Final map and encode
+        filter_str = "".join(fc)
+        cmd.extend([
+            "-filter_complex", filter_str,
+            "-map", f"[{last_v}]",
+            "-map", "1:a",
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            "-r", "30",
+            "-t", f"{duration_s:.3f}",
+            "-c:a", "aac",
+            "-b:a", "192k",
+            str(out_resolved),
+        ])
+
+        subprocess.run(cmd, capture_output=True, check=True)
+        return out_resolved
