@@ -273,3 +273,122 @@ def test_set_secret_cli_subcommand(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     assert stored.get("mk-studio:openai_api") == "sk-test-secret-value"
 
 
+def test_studio_pipeline_actions_dispatch_and_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify that Studio orchestrator triggers asset generation, Palmier assembly, export, and YouTube staging."""
+    policy = RootPolicy(output_root=tmp_path / "scratch")
+    orch = StudioOrchestrator(policy)
+
+    # 1. Fake initial script in workflow manifest
+    ep_dir = policy.output_root_resolved / "episodes" / "EP03_COUNTING_FLOWERS"
+    ep_dir.mkdir(parents=True, exist_ok=True)
+    script_path = ep_dir / "proposed_script_v001.md"
+    script_path.write_text("# Mar & Kuku: Counting Flowers\nPreschool episode script.")
+    initial_manifest = {
+        "episode_id": "EP03_COUNTING_FLOWERS",
+        "status": "completed",
+        "current_script_version": "v001",
+        "current_script_path": str(script_path),
+        "steps": {
+            "step_1_chatgpt_master_plan": {"status": "completed", "submission_count": 1},
+            "step_2_gemini_review": {"status": "completed", "submission_count": 1},
+            "step_3_manus_specialist": {"status": "completed", "submission_count": 1},
+            "step_4_chatgpt_synthesis": {"status": "completed", "submission_count": 1},
+        },
+    }
+    orch.workflow.save_manifest(initial_manifest, episode_id="EP03_COUNTING_FLOWERS")
+
+    # Mock stage 9 browser staging to avoid live network during unit tests
+    dummy_shot = ep_dir / "test_yt_stage.png"
+    dummy_shot.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    def fake_youtube_stage(*args, **kwargs):
+        return {
+            "status": "ready_for_upload",
+            "url": "https://studio.youtube.com/",
+            "screenshot": {"path": str(dummy_shot), "sha256": "33" * 32},
+            "dom_summary": {"url": "https://studio.youtube.com/", "title": "Channel dashboard - YouTube Studio"},
+        }
+
+    monkeypatch.setattr(orch.browser, "inspect_youtube_studio_and_stage_upload", fake_youtube_stage)
+
+    # Mock Palmier MP4 rendering and QA verification to keep unit test swift (<2s)
+    fake_mp4 = ep_dir / "EP03_COUNTING_FLOWERS_Counting_Flowers_1080p30_v001.mp4"
+    def fake_render(self, plan, output_mp4_path, **kwargs):
+        Path(output_mp4_path).write_bytes(b"\x00\x00\x00 ftypisom")
+        return {
+            "status": "rendered",
+            "mp4_path": str(output_mp4_path),
+            "video_frames": 900,
+            "duration_seconds": 30.0,
+        }
+
+    monkeypatch.setattr(
+        "mk_studio.editors.palmier.PalmierAdapter.render_timeline_plan_to_mp4",
+        fake_render,
+    )
+    monkeypatch.setattr(
+        "mk_studio.production.pipeline.verify_exported_mp4",
+        lambda *args, **kwargs: {
+            "passed": True,
+            "hold_stillness_rms": 0.5731,
+            "bob_motion_rms": 28.3867,
+            "flower_appearance_rms": 55.1098,
+            "rendered_qa_passed": True,
+        },
+    )
+
+    # Test Action: generate_assets
+    res_assets = orch.handle_chat_turn(
+        conversation_id="conv-e02-ch01-main",
+        user_message="Generate audio and visual props for the episode",
+        action="generate_assets",
+        action_params={"episode_id": "EP03_COUNTING_FLOWERS"},
+    )
+    assert res_assets["job"]["status"] == "succeeded"
+    wf_after_assets = orch.workflow.load_manifest("EP03_COUNTING_FLOWERS")
+    assert "step_6_asset_generation_and_intake" in wf_after_assets["steps"]
+    assert wf_after_assets["steps"]["step_6_asset_generation_and_intake"]["status"] == "completed"
+
+    # Test Action: assemble_palmier
+    res_palmier = orch.handle_chat_turn(
+        conversation_id="conv-e02-ch01-main",
+        user_message="Assemble the episode in Palmier Pro",
+        action="assemble_palmier",
+        action_params={"episode_id": "EP03_COUNTING_FLOWERS"},
+    )
+    assert res_palmier["job"]["status"] == "succeeded"
+    wf_after_palmier = orch.workflow.load_manifest("EP03_COUNTING_FLOWERS")
+    assert "step_7_palmier_editing" in wf_after_palmier["steps"]
+    assert wf_after_palmier["steps"]["step_7_palmier_editing"]["status"] == "completed"
+
+    # Test Action: export_mp4
+    res_export = orch.handle_chat_turn(
+        conversation_id="conv-e02-ch01-main",
+        user_message="Export the final MP4 and run QA",
+        action="export_mp4",
+        action_params={"episode_id": "EP03_COUNTING_FLOWERS"},
+    )
+    assert res_export["job"]["status"] == "succeeded"
+    wf_after_export = orch.workflow.load_manifest("EP03_COUNTING_FLOWERS")
+    assert "step_8_final_mp4_export" in wf_after_export["steps"]
+    assert wf_after_export["steps"]["step_8_final_mp4_export"]["status"] == "completed"
+
+    # Test Action: stage_youtube
+    res_yt = orch.handle_chat_turn(
+        conversation_id="conv-e02-ch01-main",
+        user_message="Stage the video and metadata package for YouTube Studio",
+        action="stage_youtube",
+        action_params={"episode_id": "EP03_COUNTING_FLOWERS"},
+    )
+    assert res_yt["job"]["status"] == "succeeded"
+    wf_after_yt = orch.workflow.load_manifest("EP03_COUNTING_FLOWERS")
+    assert "step_9_youtube_studio_upload" in wf_after_yt["steps"]
+    assert wf_after_yt["steps"]["step_9_youtube_studio_upload"]["status"] in (
+        "ready_for_upload",
+        "completed",
+    )
+
+
+

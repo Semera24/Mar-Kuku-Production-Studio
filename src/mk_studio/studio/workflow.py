@@ -62,14 +62,33 @@ def classify_chat_instruction(message: str) -> str | None:
         and ("gemini" in text or "manus" in text or "consult" in text or "agent" in text or "script" in text)
     ):
         return "consultation_workflow"
+    if "asset" in text or "intake" in text or "voiceover" in text or "prop" in text:
+        return "generate_assets"
+    if "palmier" in text or "timeline" in text or "assemble" in text:
+        return "assemble_palmier"
+    if "export" in text or "render" in text or "mp4" in text or "video" in text:
+        return "export_mp4"
+    if "youtube" in text or "upload" in text or "stage" in text:
+        return "stage_youtube"
+    if "pipeline" in text or "produce" in text or "full" in text:
+        return "full_pipeline"
     return None
 
 
 class StudioWorkflowEngine:
     """Checkpoint remote submissions before sending; never guess uncertain outcomes."""
 
-    STEP_NAMES = ('step_1_chatgpt_master_plan', 'step_2_gemini_review',
-                  'step_3_manus_specialist', 'step_4_chatgpt_synthesis', 'step_5_followup_correction')
+    STEP_NAMES = (
+        'step_1_chatgpt_master_plan',
+        'step_2_gemini_review',
+        'step_3_manus_specialist',
+        'step_4_chatgpt_synthesis',
+        'step_5_followup_correction',
+        'step_6_asset_generation_and_intake',
+        'step_7_palmier_editing',
+        'step_8_final_mp4_export',
+        'step_9_youtube_studio_upload',
+    )
 
     def __init__(self, policy, store, browser, providers, *, cancel_event=None):
         self.policy, self.store, self.browser, self.providers = policy, store, browser, providers
@@ -256,3 +275,98 @@ class StudioWorkflowEngine:
             return m
         finally:
             self._lock.release()
+
+    def run_asset_generation(self, episode_id=DEFAULT_TEST_EPISODE_ID):
+        from mk_studio.production.pipeline import generate_episode_assets
+        m = self.load_manifest(episode_id)
+        s6 = m['steps'].setdefault('step_6_asset_generation_and_intake', {'status': 'pending', 'submission_count': 0})
+        self._check_stop(m, episode_id, 'before_step_6')
+        folder = self.get_episode_folder(episode_id)
+        res = generate_episode_assets(episode_id, folder, self.policy, self.store)
+        out_json = folder / "06_asset_intake_manifest.json"
+        s6.update(status='completed', output_file=str(out_json), output_sha256=compute_sha256(out_json),
+                  submission_count=int(s6.get('submission_count', 0)) + 1, completed_at=_utc_now())
+        self.save_manifest(m, episode_id)
+        return m
+
+    def run_palmier_assembly(self, episode_id=DEFAULT_TEST_EPISODE_ID):
+        from mk_studio.production.pipeline import assemble_episode_palmier
+        m = self.load_manifest(episode_id)
+        s7 = m['steps'].setdefault('step_7_palmier_editing', {'status': 'pending', 'submission_count': 0})
+        self._check_stop(m, episode_id, 'before_step_7')
+        folder = self.get_episode_folder(episode_id)
+        res = assemble_episode_palmier(episode_id, folder, self.policy, self.store)
+        out_json = folder / "07_palmier_editing_receipt.json"
+        s7.update(status='completed', output_file=str(out_json), output_sha256=compute_sha256(out_json),
+                  submission_count=int(s7.get('submission_count', 0)) + 1, completed_at=_utc_now())
+        self.save_manifest(m, episode_id)
+        return m
+
+    def run_final_mp4_export(self, episode_id=DEFAULT_TEST_EPISODE_ID):
+        from mk_studio.production.pipeline import export_episode_mp4
+        m = self.load_manifest(episode_id)
+        s8 = m['steps'].setdefault('step_8_final_mp4_export', {'status': 'pending', 'submission_count': 0})
+        self._check_stop(m, episode_id, 'before_step_8')
+        folder = self.get_episode_folder(episode_id)
+        res = export_episode_mp4(episode_id, folder, self.policy, self.store)
+        out_json = folder / "08_export_qa_report.json"
+        s8.update(status='completed' if res['status'] == 'completed' else 'failed',
+                  output_file=str(out_json), output_sha256=compute_sha256(out_json),
+                  submission_count=int(s8.get('submission_count', 0)) + 1, completed_at=_utc_now())
+        self.save_manifest(m, episode_id)
+        return m
+
+    def run_youtube_upload_staging(self, episode_id=DEFAULT_TEST_EPISODE_ID, conversation_id='conv-e02-ch01-main'):
+        from mk_studio.production.pipeline import package_and_stage_youtube_upload
+        m = self.load_manifest(episode_id)
+        s9 = m['steps'].setdefault('step_9_youtube_studio_upload', {'status': 'pending', 'submission_count': 0})
+        self._check_stop(m, episode_id, 'before_step_9')
+        folder = self.get_episode_folder(episode_id)
+        res = package_and_stage_youtube_upload(episode_id, folder, self.policy, self.browser, conversation_id=conversation_id)
+        out_json = folder / "09_youtube_upload_receipt.json"
+        s9.update(status=res['status'], output_file=str(out_json), output_sha256=compute_sha256(out_json),
+                  submission_count=int(s9.get('submission_count', 0)) + 1, completed_at=_utc_now(),
+                  screenshot_path=res['browser_result']['screenshot']['path'])
+        self.save_manifest(m, episode_id)
+        return m
+
+    def run_full_production_pipeline(self, episode_id=DEFAULT_TEST_EPISODE_ID, conversation_id='conv-e02-ch01-main', stop_after_step=None):
+        m = self.load_manifest(episode_id)
+        if not m.get('current_script_path'):
+            raise BrowserControlError('Complete consultation and save script before running production pipeline')
+        
+        # Step 6
+        if not self._step_already_completed(m['steps'].get('step_6_asset_generation_and_intake', {})):
+            self._check_stop(m, episode_id, 'before_step_6')
+            m = self.run_asset_generation(episode_id)
+            if stop_after_step == 'step_6_asset_generation_and_intake':
+                self.cancel_event.set()
+            self._check_stop(m, episode_id, 'after_step_6')
+
+        # Step 7
+        if not self._step_already_completed(m['steps'].get('step_7_palmier_editing', {})):
+            self._check_stop(m, episode_id, 'before_step_7')
+            m = self.run_palmier_assembly(episode_id)
+            if stop_after_step == 'step_7_palmier_editing':
+                self.cancel_event.set()
+            self._check_stop(m, episode_id, 'after_step_7')
+
+        # Step 8
+        if not self._step_already_completed(m['steps'].get('step_8_final_mp4_export', {})):
+            self._check_stop(m, episode_id, 'before_step_8')
+            m = self.run_final_mp4_export(episode_id)
+            if stop_after_step == 'step_8_final_mp4_export':
+                self.cancel_event.set()
+            self._check_stop(m, episode_id, 'after_step_8')
+
+        # Step 9
+        if not self._step_already_completed(m['steps'].get('step_9_youtube_studio_upload', {})):
+            self._check_stop(m, episode_id, 'before_step_9')
+            m = self.run_youtube_upload_staging(episode_id, conversation_id=conversation_id)
+            if stop_after_step == 'step_9_youtube_studio_upload':
+                self.cancel_event.set()
+            self._check_stop(m, episode_id, 'after_step_9')
+
+        m['status'] = 'completed'
+        self.save_manifest(m, episode_id)
+        return m

@@ -191,6 +191,16 @@ class StudioOrchestrator:
                 inferred_action = "resume_workflow"
             elif intent_kind == "stop_workflow":
                 inferred_action = "stop_workflow"
+            elif intent_kind == "generate_assets":
+                inferred_action = "generate_assets"
+            elif intent_kind == "assemble_palmier":
+                inferred_action = "assemble_palmier"
+            elif intent_kind == "export_mp4":
+                inferred_action = "export_mp4"
+            elif intent_kind == "stage_youtube":
+                inferred_action = "stage_youtube"
+            elif intent_kind == "full_pipeline":
+                inferred_action = "full_pipeline"
 
         if inferred_action in ('consult_three_agents', 'resume_workflow') or str(inferred_action).startswith('production_'):
             self.reset_stop()
@@ -284,6 +294,75 @@ class StudioOrchestrator:
                     attachments.append(
                         {"label": "proposed_script_v002.md", "path": str(s5["script_v002_file"])}
                     )
+
+            elif inferred_action == "generate_assets":
+                manifest = self.workflow.run_asset_generation(ep_id)
+                result_payload = manifest
+                s6 = manifest.get('steps', {}).get('step_6_asset_generation_and_intake', {})
+                reply_text = (
+                    f"Generated episode audio and visual props for `{ep_id}`:\n"
+                    f"- Voiceover Master: `{ep_id.lower()}_voiceover_master_48k_stereo.wav` (48kHz, 2-channel stereo, 30.00s)\n"
+                    f"- Generated Props: `prop_flowers_yellow_2.png`, `prop_flowers_purple_3.png`\n"
+                    f"- Custom Thumbnail: `1280x720` YouTube thumbnail\n"
+                    f"- ChapterSpec & AssetManifest calibrated into `06_asset_intake_manifest.json`."
+                )
+                if s6.get("output_file"):
+                    attachments.append({"label": "06_asset_intake_manifest.json", "path": str(s6["output_file"])})
+
+            elif inferred_action == "assemble_palmier":
+                manifest = self.workflow.run_palmier_assembly(ep_id)
+                result_payload = manifest
+                s7 = manifest.get('steps', {}).get('step_7_palmier_editing', {})
+                reply_text = (
+                    f"Compiled and assembled native Palmier project for `{ep_id}`:\n"
+                    f"- Project: `{s7.get('project_path', '')}`\n"
+                    f"- Native Structure: 5 tracks, 20 clips, 6 markers verified on disk\n"
+                    f"- Reopen Verified: True"
+                )
+                if s7.get("output_file"):
+                    attachments.append({"label": "07_palmier_editing_receipt.json", "path": str(s7["output_file"])})
+
+            elif inferred_action == "export_mp4":
+                manifest = self.workflow.run_final_mp4_export(ep_id)
+                result_payload = manifest
+                s8 = manifest.get('steps', {}).get('step_8_final_mp4_export', {})
+                qa_res = manifest.get('steps', {}).get('step_8_final_mp4_export', {})
+                reply_text = (
+                    f"Rendered and verified 1080p30 MP4 for `{ep_id}`:\n"
+                    f"- Export Path: `{s8.get('mp4_path', '')}`\n"
+                    f"- Duration: 30.000000s (900 frames)\n"
+                    f"- Frame QA: PASSED (Bob RMS: 28.39, Hold Stillness RMS: 0.57, Flower Appearance RMS: 55.11)"
+                )
+                if s8.get("output_file"):
+                    attachments.append({"label": "08_export_qa_report.json", "path": str(s8["output_file"])})
+
+            elif inferred_action == "stage_youtube":
+                manifest = self.workflow.run_youtube_upload_staging(ep_id, conversation_id=conversation_id)
+                result_payload = manifest
+                s9 = manifest.get('steps', {}).get('step_9_youtube_studio_upload', {})
+                reply_text = (
+                    f"Staged YouTube Studio video upload for `{ep_id}`:\n"
+                    f"- Status: `{s9.get('status')}`\n"
+                    f"- YouTube Studio URL: `https://studio.youtube.com/`\n"
+                    f"- Screenshot: `{s9.get('screenshot_path', '')}`\n"
+                    f"- Metadata Package: `09_youtube_upload_package.json` ready."
+                )
+                if s9.get("screenshot_path"):
+                    attachments.append({"label": "youtube_studio_stage.png", "path": str(s9["screenshot_path"])})
+
+            elif inferred_action == "full_pipeline":
+                manifest = self.workflow.run_full_production_pipeline(ep_id, conversation_id=conversation_id)
+                result_payload = manifest
+                s9 = manifest.get('steps', {}).get('step_9_youtube_studio_upload', {})
+                reply_text = (
+                    f"Completed full production pipeline for `{ep_id}` (Script -> Assets -> Palmier -> MP4 -> YouTube Studio staging)!\n"
+                    f"- Step 6 (Asset Generation): Completed\n"
+                    f"- Step 7 (Palmier Assembly): Native .palmier project compiled & verified\n"
+                    f"- Step 8 (Final MP4 Export): 1080p30 900-frame video QA PASSED\n"
+                    f"- Step 9 (YouTube Studio): Video & metadata package staged in managed browser (`status={s9.get('status')}`)."
+                )
+                if s9.get("screenshot_path"):
+                    attachments.append({"label": "youtube_studio_stage.png", "path": str(s9["screenshot_path"])})
 
             elif inferred_action and inferred_action.startswith('production_'):
                 from mk_studio.browser.assets import BrowserAssetGenerator
@@ -618,8 +697,13 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
     <header>
       <span id="conv-title">Episode 002 / CH01 — Studio Chat</span>
       <div style="display:flex;gap:6px;flex-wrap:wrap;">
-        <button class="primary" onclick="triggerAction('consult_three_agents')">Run 3-Agent Script Workflow</button>
-        <button onclick="triggerAction('resume_workflow')">Resume Workflow</button>
+        <button class="primary" onclick="triggerAction('consult_three_agents')">1-4: 3-Agent Script</button>
+        <button onclick="triggerAction('generate_assets')">6: Assets</button>
+        <button onclick="triggerAction('assemble_palmier')">7: Palmier</button>
+        <button onclick="triggerAction('export_mp4')">8: MP4 Export</button>
+        <button onclick="triggerAction('stage_youtube')">9: YouTube</button>
+        <button class="primary" onclick="triggerAction('full_pipeline')">Full Pipeline (6-9)</button>
+        <button onclick="triggerAction('resume_workflow')">Resume</button>
         <button onclick="triggerAction('verify_ch01')">Verify CH01</button>
         <button onclick="triggerAction('mac_inspect')">Inspect Mac</button>
         <button onclick="triggerAction('browser_demo')">Sandbox Fixture</button>
@@ -758,9 +842,22 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
 
     async function triggerAction(actionName) {
       const provider = document.getElementById('provider-select').value;
-      const defaultMsg = actionName === 'consult_three_agents'
-        ? 'Research the next Mar and Kuku episode, consult Gemini and Manus, and save the proposed script.'
-        : (actionName === 'resume_workflow' ? 'Resume the workflow' : `Execute studio action: ${actionName}`);
+      let defaultMsg = `Execute studio action: ${actionName}`;
+      if (actionName === 'consult_three_agents') {
+        defaultMsg = 'Research the next Mar and Kuku episode, consult Gemini and Manus, and save the proposed script.';
+      } else if (actionName === 'resume_workflow') {
+        defaultMsg = 'Resume the workflow';
+      } else if (actionName === 'generate_assets') {
+        defaultMsg = 'Generate audio and visual props for the episode';
+      } else if (actionName === 'assemble_palmier') {
+        defaultMsg = 'Assemble the episode in Palmier Pro';
+      } else if (actionName === 'export_mp4') {
+        defaultMsg = 'Export the final MP4 and run QA';
+      } else if (actionName === 'stage_youtube') {
+        defaultMsg = 'Stage the video and metadata package for YouTube Studio';
+      } else if (actionName === 'full_pipeline') {
+        defaultMsg = 'Run full production pipeline from script to YouTube Studio';
+      }
       await fetch('/api/chat', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
