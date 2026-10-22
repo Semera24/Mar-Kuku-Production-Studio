@@ -770,10 +770,10 @@ def assemble_episode_palmier(
         from mk_studio.audio.workflow import ListeningApprovalTicket, compile_palmier_cues_from_approval
         ticket_data = json.loads(ticket_candidates[0].read_text(encoding="utf-8"))
         ticket = ListeningApprovalTicket.model_validate(ticket_data)
-        if ticket.status != "approved":
+        if ticket.status not in ("approved", "approved_by_chatgpt_delegate"):
             raise ValueError(
                 f"Listening approval required: Ticket '{ticket.ticket_id}' status is '{ticket.status}'. "
-                f"Owner must listen and approve audio review ticket before Palmier compilation."
+                f"Owner or delegated ChatGPT must approve audio review ticket before Palmier compilation."
             )
         approved_ticket_id = ticket.ticket_id
         # Inject approved cues and audio asset into the chapter spec and manifest

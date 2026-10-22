@@ -64,6 +64,8 @@ def classify_chat_instruction(message: str) -> str | None:
         return "consultation_workflow"
     if "asset" in text or "intake" in text or "voiceover" in text or "prop" in text:
         return "generate_assets"
+    if "flow music" in text or "remix" in text or "lyria" in text or "nine birds" in text or ("audio" in text and ("generate" in text or "download" in text)):
+        return "flow_music_audio_pipeline"
     if "palmier" in text or "timeline" in text or "assemble" in text:
         return "assemble_palmier"
     if "export" in text or "render" in text or "mp4" in text or "video" in text:
@@ -289,6 +291,171 @@ class StudioWorkflowEngine:
                   submission_count=int(s6.get('submission_count', 0)) + 1, completed_at=_utc_now())
         self.save_manifest(m, episode_id)
         return m
+
+    def run_flow_music_audio_pipeline(
+        self,
+        episode_id=DEFAULT_TEST_EPISODE_ID,
+        *,
+        conversation_id="conv-e02-ch01-main",
+        track_name="Nine Birds in the Sky",
+        delegate_to_chatgpt=False,
+    ):
+        """Execute complete Flow Music Remix/Download -> Manus -> ChatGPT -> Listening Ticket chain."""
+        import time
+        from mk_studio.audio.workflow import (
+            approve_listening_ticket_as_delegate,
+            create_listening_approval_ticket,
+            intake_audio_master,
+            review_and_align_with_chatgpt,
+            transcribe_with_manus,
+        )
+        from mk_studio.browser.flow_music import GoogleFlowMusicAdapter
+        from mk_studio.production.pipeline import parse_script_markdown
+
+        m = self.load_manifest(episode_id)
+        step_key = "step_6a_flow_music_audio_pipeline"
+        s6a = m["steps"].setdefault(step_key, {"status": "pending", "submission_count": 0})
+        self._check_stop(m, episode_id, "before_step_6a")
+        folder = self.get_episode_folder(episode_id)
+
+        # 1. Resolve chapter script
+        script_path = None
+        if m.get("current_script_path") and Path(m["current_script_path"]).is_file():
+            script_path = Path(m["current_script_path"])
+        else:
+            candidates = sorted(folder.glob("proposed_script*.md"), reverse=True)
+            if candidates:
+                script_path = candidates[0]
+            else:
+                script_path = folder / "proposed_script_v001.md"
+                script_path.write_text(
+                    "# Mar & Kuku — Counting Birds\n"
+                    "MAR: \"Look at all the birds! Let's count together!\"\n"
+                    "[RESPONSE: Pause for 4.0 seconds. No vocals.]\n"
+                    "KUKU: \"Nine beautiful birds in the sky!\"\n",
+                    encoding="utf-8",
+                )
+                m["current_script_path"] = str(script_path)
+                m["current_script_version"] = "v001"
+
+        parsed_script = parse_script_markdown(script_path)
+        holds = parsed_script.get("holds") or [(501, 621)]
+        h_start_s = round(holds[0][0] / 30.0, 2)
+        h_end_s = round(holds[0][1] / 30.0, 2)
+
+        # 2. Flow Music Adapter
+        flow_adapter = GoogleFlowMusicAdapter(self.browser)
+        auth_info = flow_adapter.check_connection_and_auth()
+        if not auth_info.get("authenticated"):
+            raise BrowserControlError(f"Google Flow Music not authenticated: {auth_info}")
+
+        orig_dir = folder / "00_ORIGINAL"
+        orig_dir.mkdir(parents=True, exist_ok=True)
+        expected_wav = orig_dir / f"{track_name}.wav"
+
+        generation_kind = "existing_session_track"
+        if expected_wav.is_file() and s6a.get("status") == "completed":
+            dl_info = {
+                "saved_path": str(expected_wav),
+                "sha256": compute_sha256(expected_wav),
+                "track_name": track_name,
+                "format": "WAV",
+            }
+        else:
+            flow_adapter.open_reference_session()
+            existing_tracks = flow_adapter.list_session_tracks()
+
+            track_exists = any(t.get("name") == track_name for t in existing_tracks)
+            if not track_exists:
+                generation_kind = "newly_generated"
+                flow_adapter.trigger_remix_for_track("Five Flowers in the Garden")
+                prompt_text = (
+                    f"Create a preschool counting song for Mar & Kuku titled '{track_name}'. "
+                    f"Keep the warm, gentle female vocal style and acoustic ukulele/bells. "
+                    f"Include a silent pause from {h_start_s:.1f}s to {h_end_s:.1f}s."
+                )
+                flow_adapter.submit_approved_prompt(prompt_text, conversation_id=conversation_id)
+                time.sleep(5.0)
+
+            dl_info = flow_adapter.download_track_audio(
+                track_name=track_name,
+                download_format="WAV",
+                destination_dir=orig_dir,
+                conversation_id=conversation_id,
+            )
+
+        # 3. Intake Audio Master with provenance
+        intake = intake_audio_master(
+            Path(dl_info["saved_path"]),
+            folder / f"{episode_id.lower()}_master.wav",
+            source_service="Google Flow Music (Lyria 3.5)",
+            source_url=auth_info.get("url"),
+            revision_kind="review_candidate",
+        )
+
+        # 4. Transcribe with Manus
+        transcript = transcribe_with_manus(intake, browser_controller=self.browser)
+
+        # 5. Review & Align with ChatGPT (derives dynamic hold timing)
+        review = review_and_align_with_chatgpt(
+            transcript,
+            script_path,
+            audio_artifact=intake,
+            hold_window_s=(h_start_s, h_end_s),
+            browser_controller=self.browser,
+        )
+
+        # 6. Stage Listening Approval Ticket
+        ticket = create_listening_approval_ticket(
+            folder,
+            episode_id=episode_id,
+            chapter_id="CH01",
+            intake=intake,
+            transcript=transcript,
+            review=review,
+        )
+        ticket_path = folder / f"{ticket.ticket_id}.json"
+
+        # 7. Delegated Approval on Owner's Behalf (if requested)
+        if delegate_to_chatgpt:
+            if review.hold_window_verified and review.alignment_status == "aligned" and not review.conflicts:
+                ticket = approve_listening_ticket_as_delegate(
+                    ticket_path,
+                    delegate_agent="chatgpt",
+                    reasoning=f"Delegated review: Spoken dialogue matches approved script and {h_start_s:.2f}s..{h_end_s:.2f}s hold window has zero vocal collisions.",
+                )
+
+        out_json = folder / "06a_flow_music_receipt.json"
+        receipt = {
+            "episode_id": episode_id,
+            "track_name": track_name,
+            "generation_kind": generation_kind,
+            "download_info": dl_info,
+            "intake": intake.model_dump(),
+            "transcript_segments_count": len(transcript.timed_segments),
+            "review_verdict": review.chatgpt_verdict,
+            "hold_window_s": [h_start_s, h_end_s],
+            "ticket_id": ticket.ticket_id,
+            "ticket_status": ticket.status,
+            "delegated_approval": ticket.delegated_approval,
+        }
+        out_json.write_text(json.dumps(receipt, indent=2), encoding="utf-8")
+
+        s6a.update(
+            status="completed",
+            output_file=str(out_json),
+            output_sha256=compute_sha256(out_json),
+            ticket_path=str(ticket_path),
+            ticket_status=ticket.status,
+            submission_count=int(s6a.get("submission_count", 0)) + 1,
+            completed_at=_utc_now(),
+        )
+        self.save_manifest(m, episode_id)
+        return {
+            "manifest": m,
+            "ticket": ticket,
+            "receipt": receipt,
+        }
 
     def run_palmier_assembly(self, episode_id=DEFAULT_TEST_EPISODE_ID):
         from mk_studio.production.pipeline import assemble_episode_palmier

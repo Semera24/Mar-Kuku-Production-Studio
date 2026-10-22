@@ -193,6 +193,8 @@ class StudioOrchestrator:
                 inferred_action = "stop_workflow"
             elif intent_kind == "generate_assets":
                 inferred_action = "generate_assets"
+            elif intent_kind == "flow_music_audio_pipeline":
+                inferred_action = "flow_music_audio_pipeline"
             elif intent_kind == "assemble_palmier":
                 inferred_action = "assemble_palmier"
             elif intent_kind == "export_mp4":
@@ -308,6 +310,40 @@ class StudioOrchestrator:
                 )
                 if s6.get("output_file"):
                     attachments.append({"label": "06_asset_intake_manifest.json", "path": str(s6["output_file"])})
+
+            elif inferred_action == "flow_music_audio_pipeline":
+                # Check if user message or params request delegated approval on owner's behalf
+                delegate = bool(
+                    params.get("delegate_to_chatgpt")
+                    or "on behalf" in user_message.lower()
+                    or "behalf of owner" in user_message.lower()
+                    or "gpt can listen" in user_message.lower()
+                    or "gpt can review" in user_message.lower()
+                )
+                pipeline_res = self.workflow.run_flow_music_audio_pipeline(
+                    ep_id,
+                    conversation_id=conversation_id,
+                    track_name=str(params.get("track_name") or "Nine Birds in the Sky"),
+                    delegate_to_chatgpt=delegate,
+                )
+                result_payload = pipeline_res["manifest"]
+                receipt = pipeline_res["receipt"]
+                ticket = pipeline_res["ticket"]
+                reply_text = (
+                    f"Executed Flow Music audio production pipeline for `{ep_id}`:\n"
+                    f"- Track: `{receipt.get('track_name')}` ({receipt.get('generation_kind')})\n"
+                    f"- Audio Master: `{receipt['download_info']['saved_path']}` ({receipt['download_info']['audio_specs'].get('sample_rate')}Hz Stereo, {receipt['download_info']['audio_specs'].get('duration_seconds')}s)\n"
+                    f"- Manus Timestamps Extracted: {receipt.get('transcript_segments_count')} lines\n"
+                    f"- Dynamic Hold Window: [{receipt['hold_window_s'][0]:.2f}s..{receipt['hold_window_s'][1]:.2f}s]\n"
+                    f"- ChatGPT Alignment Verdict: `{receipt.get('review_verdict')}`\n"
+                    f"- Listening Ticket: `{ticket.ticket_id}` (Status: `{ticket.status}`"
+                    f"{' [Delegated sign-off on owner behalf]' if ticket.delegated_approval else ' [Awaiting owner sign-off]'})\n"
+                    f"- Receipt Saved: `06a_flow_music_receipt.json`"
+                )
+                if receipt.get("download_info", {}).get("saved_path"):
+                    attachments.append({"label": f"{receipt.get('track_name')}.wav", "path": receipt["download_info"]["saved_path"]})
+                if s6a_file := pipeline_res["manifest"].get("steps", {}).get("step_6a_flow_music_audio_pipeline", {}).get("output_file"):
+                    attachments.append({"label": "06a_flow_music_receipt.json", "path": str(s6a_file)})
 
             elif inferred_action == "assemble_palmier":
                 manifest = self.workflow.run_palmier_assembly(ep_id)

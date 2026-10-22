@@ -47,6 +47,7 @@ class CdpWebSocketClient:
         self.timeout_seconds = timeout_seconds
         self._sock: socket.socket | None = None
         self._next_id = 0
+        self.received_events: list[dict[str, Any]] = []
 
     def connect(self) -> None:
         sock = socket.create_connection((self.host, self.port), timeout=self.timeout_seconds)
@@ -149,6 +150,8 @@ class CdpWebSocketClient:
             if not raw:
                 continue
             parsed = json.loads(raw)
+            if "method" in parsed:
+                self.received_events.append(parsed)
             if parsed.get("id") == req_id:
                 if "error" in parsed:
                     raise BrowserControlError(f"CDP {method} error: {parsed['error']}")
@@ -1203,6 +1206,9 @@ class BrowserController:
             if attached_file_str:
                 try:
                     ws.call("DOM.enable")
+                    ws.call("Page.setInterceptFileChooserDialog", {"enabled": True})
+
+                    # Check direct file input first
                     doc = ws.call("DOM.getDocument", {"depth": -1})
                     root_node_id = int((doc.get("root") or {}).get("nodeId") or 1)
                     q_res = ws.call(
@@ -1212,20 +1218,45 @@ class BrowserController:
                     file_node_id = int(q_res.get("nodeId") or 0)
                     if file_node_id > 0:
                         ws.call("DOM.setFileInputFiles", {"nodeId": file_node_id, "files": [attached_file_str]})
+                        file_attached = True
+                    else:
+                        # Open attachment menu via plus button and click Local files
                         ws.call(
                             "Runtime.evaluate",
                             {
                                 "expression": """
                                 (() => {
-                                    const el = document.querySelector("input[type='file']");
-                                    if (el) el.dispatchEvent(new Event('change', {bubbles: true}));
+                                    const btn = document.querySelector("button:has(svg.lucide-plus)");
+                                    if (btn) btn.click();
                                     return true;
                                 })()
                                 """
                             },
                         )
-                        file_attached = True
-                        time.sleep(1.0)
+                        time.sleep(0.5)
+                        ws.call(
+                            "Runtime.evaluate",
+                            {
+                                "expression": """
+                                (() => {
+                                    const localEl = Array.from(document.querySelectorAll("*")).find(el => el.innerText.trim() === "Local files" && el.children.length === 0);
+                                    if (localEl) localEl.click();
+                                    return true;
+                                })()
+                                """
+                            },
+                        )
+                        time.sleep(0.5)
+
+                        # Check intercepted fileChooserOpened event
+                        evt = next((e for e in ws.received_events if e.get("method") == "Page.fileChooserOpened"), None)
+                        if evt:
+                            backend_id = evt.get("params", {}).get("backendNodeId")
+                            if backend_id:
+                                ws.call("DOM.setFileInputFiles", {"backendNodeId": int(backend_id), "files": [attached_file_str]})
+                                file_attached = True
+
+                    time.sleep(1.0)
                 except Exception:
                     pass
 

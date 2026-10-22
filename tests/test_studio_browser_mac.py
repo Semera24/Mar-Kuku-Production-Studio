@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -464,6 +465,133 @@ KUKU (giggling): "Hehehe! Two yellow flowers!"
     assert res_b["episode_id"] == "EP_B"
     assert res_a["audio_master"]["path"] == str(wav_a)
     assert res_b["audio_master"]["path"] == str(wav_b)
+
+
+def test_flow_music_action_dispatch_and_delegated_approval(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify that Studio orchestrates Flow Music generation, Manus, ChatGPT, and delegated approval from chat."""
+    policy = RootPolicy(output_root=tmp_path / "scratch")
+    orch = StudioOrchestrator(policy)
+
+    ep_dir = policy.output_root_resolved / "episodes" / "EP03_COUNTING_FLOWERS"
+    ep_dir.mkdir(parents=True, exist_ok=True)
+    script_path = ep_dir / "proposed_script_v001.md"
+    script_path.write_text(
+        "# Mar & Kuku: Counting Birds\n"
+        "MAR: \"Look at the birds!\"\n"
+        "[HOLD: 300..420]\n"
+        "KUKU: \"Nine birds in the sky!\"\n",
+        encoding="utf-8",
+    )
+    orch.workflow.save_manifest(
+        {
+            "episode_id": "EP03_COUNTING_FLOWERS",
+            "status": "completed",
+            "current_script_version": "v001",
+            "current_script_path": str(script_path),
+            "steps": {},
+        },
+        episode_id="EP03_COUNTING_FLOWERS",
+    )
+
+    # Mock Flow Music adapter
+    from mk_studio.browser.flow_music import GoogleFlowMusicAdapter
+
+    fake_wav = ep_dir / "test_download.wav"
+    fake_wav.write_bytes(b"RIFF$\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x02\x00\x80\xbb\x00\x00\x00\xee\x02\x00\x04\x00\x10\x00data\x00\x00\x00\x00")
+
+    monkeypatch.setattr(
+        GoogleFlowMusicAdapter,
+        "check_connection_and_auth",
+        lambda self: {"authenticated": True, "account_handle": "dancingPatina PLUS", "url": "https://www.flowmusic.app/"},
+    )
+    monkeypatch.setattr(
+        GoogleFlowMusicAdapter,
+        "open_reference_session",
+        lambda self, *args, **kwargs: {"session_url": "https://www.flowmusic.app/session/test", "has_five_flowers": True},
+    )
+    monkeypatch.setattr(
+        GoogleFlowMusicAdapter,
+        "list_session_tracks",
+        lambda self: [{"name": "Five Flowers in the Garden"}],
+    )
+    monkeypatch.setattr(
+        GoogleFlowMusicAdapter,
+        "trigger_remix_for_track",
+        lambda self, *args, **kwargs: {"remix_clicked": True},
+    )
+    monkeypatch.setattr(
+        GoogleFlowMusicAdapter,
+        "submit_approved_prompt",
+        lambda self, *args, **kwargs: {"submitted": True},
+    )
+    monkeypatch.setattr(
+        GoogleFlowMusicAdapter,
+        "download_track_audio",
+        lambda self, track_name, **kwargs: {
+            "track_name": track_name,
+            "format": "WAV",
+            "saved_path": str(fake_wav),
+            "sha256": "44" * 32,
+            "audio_specs": {"sample_rate": 48000, "channels": 2, "duration_seconds": 30.0},
+        },
+    )
+
+    # Mock media probe
+    from mk_studio.media import AudioStreamInfo
+    monkeypatch.setattr(
+        "mk_studio.audio.workflow.probe_audio_stream_0a0",
+        lambda p: AudioStreamInfo(
+            stream_selector="0:a:0",
+            codec_name="pcm_s16le",
+            sample_rate=48000,
+            channels=2,
+            sample_fmt="s16",
+            duration_seconds=30.0,
+            duration_ts=1440000,
+            bits_per_sample=16,
+            has_attached_picture_stream=False,
+            total_container_streams=1,
+        ),
+    )
+
+    # Mock Manus and ChatGPT responses
+    def fake_manus(prompt, **kwargs):
+        return {
+            "status": "succeeded",
+            "response": "[00:01.000 - 00:03.000] MAR: Look at the birds!\n[00:15.000 - 00:18.000] KUKU: Nine birds in the sky!",
+        }
+
+    def fake_chatgpt(prompt, **kwargs):
+        return {
+            "status": "succeeded",
+            "response": "Manus transcript matches script. Custom hold 10.0s to 14.0s is clean. APPROVED_AND_ALIGNED",
+        }
+
+    monkeypatch.setattr(orch.browser, "consult_manus_web", fake_manus)
+    monkeypatch.setattr(orch.browser, "consult_chatgpt_web", fake_chatgpt)
+
+    # Dispatch turn requesting delegated sign-off
+    res = orch.handle_chat_turn(
+        conversation_id="conv-e02-ch01-main",
+        user_message="On behalf of owner gpt can listen and review the Nine Birds in the Sky audio from Flow Music",
+        action_params={"episode_id": "EP03_COUNTING_FLOWERS", "track_name": "Nine Birds in the Sky"},
+    )
+    assert res["job"]["status"] == "succeeded"
+    wf = orch.workflow.load_manifest("EP03_COUNTING_FLOWERS")
+    s6a = wf["steps"]["step_6a_flow_music_audio_pipeline"]
+    assert s6a["status"] == "completed"
+    assert s6a["ticket_status"] == "approved_by_chatgpt_delegate"
+
+    receipt_file = Path(s6a["output_file"])
+    assert receipt_file.is_file()
+    receipt_data = json.loads(receipt_file.read_text())
+    assert receipt_data["track_name"] == "Nine Birds in the Sky"
+    assert receipt_data["generation_kind"] == "newly_generated"
+    assert receipt_data["delegated_approval"] is True
+    assert receipt_data["hold_window_s"] == [10.0, 14.0]
+
 
 
 

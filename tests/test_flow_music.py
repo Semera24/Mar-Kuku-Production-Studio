@@ -121,6 +121,22 @@ def test_download_track_audio(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
 
     monkeypatch.setattr("mk_studio.browser.flow_music.CdpWebSocketClient", FakeClient)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    from mk_studio.media import AudioStreamInfo
+    monkeypatch.setattr(
+        "mk_studio.browser.flow_music.probe_audio_stream_0a0",
+        lambda p: AudioStreamInfo(
+            stream_selector="0:a:0",
+            codec_name="pcm_s16le",
+            sample_rate=48000,
+            channels=2,
+            sample_fmt="s16",
+            duration_seconds=30.0,
+            duration_ts=1440000,
+            bits_per_sample=16,
+            has_attached_picture_stream=False,
+            total_container_streams=1,
+        ),
+    )
 
     dest_dir = tmp_path / "dest"
     adapter = GoogleFlowMusicAdapter(mock_browser)

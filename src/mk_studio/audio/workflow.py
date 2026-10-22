@@ -104,7 +104,13 @@ class ListeningApprovalTicket(BaseModel):
     audio_intake: AudioIntakeArtifact
     manus_transcript: ManusTimestampedTranscript
     chatgpt_review: ChatGPTAudioReview
-    status: str = Field(default="pending_owner_approval", description="'pending_owner_approval', 'approved', 'conflicts_detected', or 'rejected'")
+    status: str = Field(
+        default="pending_owner_approval",
+        description="'pending_owner_approval', 'approved', 'approved_by_chatgpt_delegate', 'conflicts_detected', or 'rejected'",
+    )
+    delegated_approval: bool = False
+    delegate_agent: str | None = None
+    delegate_reasoning: str | None = None
     owner_notes: str | None = None
     approval_timestamp: str | None = None
 
@@ -234,6 +240,17 @@ def review_and_align_with_chatgpt(
     script_sha = compute_sha256(script_path)
     audio_path_str = audio_artifact.file_path if audio_artifact else manus_transcript.audio_path
     audio_sha = audio_artifact.sha256 if audio_artifact else manus_transcript.audio_sha256
+
+    # Derive dynamic hold timing from the approved script markdown if not explicitly overridden
+    if hold_window_s == (16.70, 20.70):
+        try:
+            parsed = parse_script_markdown(script_path)
+            if parsed.get("holds"):
+                h_start = round(parsed["holds"][0][0] / 30.0, 2)
+                h_end = round(parsed["holds"][0][1] / 30.0, 2)
+                hold_window_s = (h_start, h_end)
+        except Exception:
+            pass
 
     h_start, h_end = hold_window_s
     conflicts: list[dict[str, Any]] = []
@@ -435,9 +452,42 @@ def approve_listening_ticket(
     return ticket
 
 
+def approve_listening_ticket_as_delegate(
+    ticket_path: Path,
+    *,
+    delegate_agent: str = "chatgpt",
+    reasoning: str = "Delegated sign-off on behalf of owner: Manus transcription matches approved script and silent hold is verified clean.",
+) -> ListeningApprovalTicket:
+    """Authorize Palmier timeline compilation via delegated ChatGPT sign-off on owner's behalf."""
+    if not ticket_path.is_file():
+        raise FileNotFoundError(f"Listening ticket not found: {ticket_path}")
+
+    data = json.loads(ticket_path.read_text(encoding="utf-8"))
+    ticket = ListeningApprovalTicket.model_validate(data)
+    if ticket.status == "conflicts_detected":
+        raise ValueError(
+            f"Cannot delegate approval for ticket {ticket.ticket_id} while unresolved conflicts exist: "
+            f"{ticket.chatgpt_review.conflicts}"
+        )
+    if not ticket.chatgpt_review.hold_window_verified:
+        raise ValueError(f"Cannot delegate approval for ticket {ticket.ticket_id}: silent hold window not verified")
+    if ticket.chatgpt_review.alignment_status != "aligned":
+        raise ValueError(f"Cannot delegate approval for ticket {ticket.ticket_id}: alignment status is {ticket.chatgpt_review.alignment_status}")
+
+    ticket.status = "approved_by_chatgpt_delegate"
+    ticket.delegated_approval = True
+    ticket.delegate_agent = delegate_agent
+    ticket.delegate_reasoning = reasoning
+    ticket.owner_notes = f"[DELEGATED SIGN-OFF by {delegate_agent} on owner's behalf]: {reasoning}"
+    ticket.approval_timestamp = datetime.now(timezone.utc).isoformat()
+
+    ticket_path.write_text(ticket.model_dump_json(indent=2), encoding="utf-8")
+    return ticket
+
+
 def compile_palmier_cues_from_approval(ticket: ListeningApprovalTicket) -> list[CueEvent]:
     """Extract approved cues from a verified listening ticket and convert to typed CueEvent objects for Palmier."""
-    if ticket.status != "approved":
+    if ticket.status not in ("approved", "approved_by_chatgpt_delegate"):
         raise ValueError(
             f"Cannot compile Palmier cues: Ticket {ticket.ticket_id} status is '{ticket.status}', not 'approved'."
         )

@@ -12,6 +12,8 @@ Automates:
 from __future__ import annotations
 
 import json
+import re
+import shutil
 import time
 from pathlib import Path
 from typing import Any
@@ -129,7 +131,14 @@ class GoogleFlowMusicAdapter:
         conversation_id: str | None = None,
         timeout_seconds: float = 60.0,
     ) -> dict[str, Any]:
-        """Type the approved chapter script prompt into the Producer composer and click Send/Generate."""
+        """Type the approved chapter script prompt into the Producer composer and click Send.
+        
+        Strictly requires button[aria-label="Send message"] to be enabled and clicked.
+        Never marks filled-but-unsent input as submitted.
+        """
+        if not prompt_text or not prompt_text.strip():
+            raise BrowserControlError("Cannot submit empty prompt to Flow Music Producer")
+
         target = self.browser._get_or_create_page_target()
         ws_url = str(target["webSocketDebuggerUrl"])
         escaped_prompt = json.dumps(prompt_text)
@@ -144,19 +153,25 @@ class GoogleFlowMusicAdapter:
                         const composer = document.querySelector('textarea[placeholder="Ask Producer..."], textarea[placeholder="Describe your song..."], textarea[placeholder*="create"], textarea');
                         if (!composer) return {{ok: false, error: "Composer textarea not found"}};
                         composer.focus();
-                        composer.value = {escaped_prompt};
+                        const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
+                        if (nativeSetter) {{
+                            nativeSetter.call(composer, {escaped_prompt});
+                        }} else {{
+                            composer.value = {escaped_prompt};
+                        }}
                         composer.dispatchEvent(new Event("input", {{bubbles: true}}));
                         composer.dispatchEvent(new Event("change", {{bubbles: true}}));
 
-                        // Find send/generate button
-                        const sendBtn = document.querySelector('button[aria-label="Send message"], button:not([disabled])');
-                        const generateBtn = Array.from(document.querySelectorAll("button")).find(b => b.innerText.trim() === "Generate");
-                        const activeBtn = generateBtn || sendBtn;
-                        if (activeBtn) {{
-                            activeBtn.click();
-                            return {{ok: true, buttonClicked: activeBtn.innerText || activeBtn.getAttribute("aria-label") || "send"}};
+                        // Find send button specifically
+                        const sendBtn = document.querySelector('button[aria-label="Send message"]');
+                        if (!sendBtn) {{
+                            return {{ok: false, error: "Send button with aria-label='Send message' not found"}};
                         }}
-                        return {{ok: true, buttonClicked: "input_filled_only"}};
+                        if (sendBtn.disabled) {{
+                            return {{ok: false, error: "Send button is disabled after inserting prompt into composer"}};
+                        }}
+                        sendBtn.click();
+                        return {{ok: true, buttonClicked: "Send message"}};
                     }})()
                     """,
                     "returnByValue": True,
@@ -265,26 +280,33 @@ class GoogleFlowMusicAdapter:
 
             time.sleep(0.5)
 
-            # 3. Focus Download menuitem and send ArrowRight key to expand submenu
-            sub_res = ws.call(
+            # 3. Focus Download menuitem and dispatch native CDP ArrowRight to expand submenu
+            ws.call(
                 "Runtime.evaluate",
                 {
                     "expression": """
                     (() => {
                         const dl = Array.from(document.querySelectorAll("[role=menuitem]")).find(el => el.innerText.trim().startsWith("Download"));
-                        if (!dl) return {ok: false, error: "Download item not found in More options menu"};
-                        dl.focus();
-                        dl.dispatchEvent(new KeyboardEvent("keydown", {key: "ArrowRight", code: "ArrowRight", keyCode: 39, bubbles: true}));
-                        return {ok: true};
+                        if (dl) dl.focus();
                     })()
-                    """,
-                    "returnByValue": True,
+                    """
                 },
             )
-            sub_info = (sub_res.get("result") or {}).get("value") or {}
-            if not sub_info.get("ok"):
-                raise BrowserControlError(f"Failed to expand Download submenu: {sub_info.get('error')}")
-
+            time.sleep(0.2)
+            ws.call("Input.dispatchKeyEvent", {
+                "type": "keyDown",
+                "key": "ArrowRight",
+                "code": "ArrowRight",
+                "windowsVirtualKeyCode": 39,
+                "nativeVirtualKeyCode": 39,
+            })
+            ws.call("Input.dispatchKeyEvent", {
+                "type": "keyUp",
+                "key": "ArrowRight",
+                "code": "ArrowRight",
+                "windowsVirtualKeyCode": 39,
+                "nativeVirtualKeyCode": 39,
+            })
             time.sleep(0.5)
 
             # 4. Click target format (e.g. WAV, MP3, Get stems)
@@ -311,6 +333,8 @@ class GoogleFlowMusicAdapter:
             if not fmt_info.get("ok"):
                 raise BrowserControlError(f"Failed to click format '{download_format}': available options: {fmt_info.get('available')}")
 
+        clean_track = re.sub(r"[^A-Za-z0-9]", "", track_name.lower())
+
         # 5. Poll for completed file in ~/Downloads
         deadline = time.time() + timeout_seconds
         downloaded_file: Path | None = None
@@ -327,20 +351,46 @@ class GoogleFlowMusicAdapter:
                 downloaded_file = sorted(diff, key=lambda f: f.stat().st_mtime, reverse=True)[0]
                 break
 
+        # Fallback: Check if a matching track was recently completed in ~/Downloads
+        if not downloaded_file:
+            matching_recent = [
+                f
+                for f in downloads_dir.glob(f"*.{download_format.lower()}")
+                if clean_track[:8] in re.sub(r"[^A-Za-z0-9]", "", f.stem.lower())
+                and (time.time() - f.stat().st_mtime) < 300
+            ]
+            if matching_recent:
+                downloaded_file = sorted(matching_recent, key=lambda f: f.stat().st_mtime, reverse=True)[0]
+
         if not downloaded_file or not downloaded_file.is_file():
             raise BrowserControlError(f"Download timed out after {timeout_seconds}s waiting for {download_format} of '{track_name}'")
 
-        # 6. Copy to destination and probe specs
+        # 6. Copy to destination and strictly verify probe specs
         target_file = dest / downloaded_file.name
         shutil.copy2(downloaded_file, target_file)
         sha256 = compute_sha256(target_file)
 
-        audio_probe = {}
-        if target_file.suffix.lower() in (".wav", ".mp3", ".m4a"):
-            try:
-                audio_probe = probe_audio_stream_0a0(target_file)
-            except Exception as e:
-                audio_probe = {"probe_error": str(e)}
+        # Verify track name match (avoid accepting unrelated downloads)
+        clean_track = re.sub(r"[^A-Za-z0-9]", "", track_name.lower())
+        clean_stem = re.sub(r"[^A-Za-z0-9]", "", target_file.stem.lower())
+        # Track stem should match or overlap with requested track name
+        if clean_track[:10] not in clean_stem and clean_stem[:10] not in clean_track:
+            raise BrowserControlError(
+                f"Downloaded file name mismatch: expected '{track_name}', got '{target_file.name}'"
+            )
+
+        try:
+            audio_probe = probe_audio_stream_0a0(target_file)
+            if audio_probe.duration_seconds <= 0 or audio_probe.sample_rate <= 0:
+                raise BrowserControlError(f"Invalid audio stream metrics for {target_file.name}: {audio_probe}")
+            probe_dict = {
+                "duration_seconds": round(audio_probe.duration_seconds, 3),
+                "sample_rate": audio_probe.sample_rate,
+                "channels": audio_probe.channels,
+                "codec_name": audio_probe.codec_name,
+            }
+        except Exception as e:
+            raise BrowserControlError(f"Audio probe failed for downloaded file {target_file.name}: {e}")
 
         shot = self.browser.capture_screenshot("flowmusic_track_downloaded.png", conversation_id=conversation_id)
 
@@ -351,6 +401,6 @@ class GoogleFlowMusicAdapter:
             "saved_path": str(target_file),
             "size_bytes": target_file.stat().st_size,
             "sha256": sha256,
-            "audio_specs": audio_probe,
+            "audio_specs": probe_dict,
             "screenshot": shot["path"],
         }

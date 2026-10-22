@@ -327,3 +327,67 @@ MAR: "Let's look together!"
     assert len(project_json["timelines"][0]["tracks"]) >= 5
     assert len(project_json["timelines"][0]["markers"]) >= 3
 
+
+def test_delegated_owner_approval_and_dynamic_hold(tmp_path: Path) -> None:
+    from mk_studio.audio.workflow import approve_listening_ticket_as_delegate
+
+    script_file = tmp_path / "custom_script.md"
+    # Dynamic hold from 10.0s to 14.0s (frames 300..420)
+    script_file.write_text(
+        """# Scene 1 - Bird Watching
+MAR: "Look at the bird!"
+[HOLD: 300..420]
+KUKU: "It is flying away!"
+""",
+        encoding="utf-8",
+    )
+
+    source_wav = Path("scratch/ch01-proof/E02_CH01_Welcome_reproduced_v002.wav")
+    artifact = intake_audio_master(source_wav, tmp_path / "master.wav")
+
+    # Transcript with dialogue at 00:01 and 00:15 (clean around 10.0s-14.0s hold)
+    manus_resp = """
+[00:01.000 - 00:03.000] MAR: Look at the bird!
+[00:15.000 - 00:18.000] KUKU: It is flying away!
+"""
+    transcript = transcribe_with_manus(artifact, mock_transcript_text=manus_resp)
+    review = review_and_align_with_chatgpt(
+        transcript,
+        script_file,
+        audio_artifact=artifact,
+        mock_chatgpt_response="Approved. Hold 10.0s to 14.0s is silent. APPROVED_AND_ALIGNED",
+    )
+    # Dynamic hold derived from script
+    assert review.hold_window_s == (10.0, 14.0)
+    assert review.hold_window_verified
+    assert review.alignment_status == "aligned"
+
+    ticket = create_listening_approval_ticket(
+        tmp_path,
+        episode_id="EP_DYNAMIC",
+        chapter_id="CH01",
+        intake=artifact,
+        transcript=transcript,
+        review=review,
+    )
+    ticket_path = tmp_path / f"{ticket.ticket_id}.json"
+    assert ticket.status == "pending_owner_approval"
+
+    # Delegate approval to ChatGPT on owner's behalf
+    delegated = approve_listening_ticket_as_delegate(
+        ticket_path,
+        delegate_agent="chatgpt",
+        reasoning="Manus lines match approved script and custom hold [10s..14s] is silent.",
+    )
+    assert delegated.status == "approved_by_chatgpt_delegate"
+    assert delegated.delegated_approval
+    assert "DELEGATED SIGN-OFF" in delegated.owner_notes
+
+    # Palmier cues compilation succeeds with delegated approval
+    cues = compile_palmier_cues_from_approval(delegated)
+    assert len(cues) >= 3
+    hold_cue = next(c for c in cues if "HOLD" in c.cue_id)
+    assert hold_cue.start_frame == 300
+    assert hold_cue.end_frame == 420
+
+
