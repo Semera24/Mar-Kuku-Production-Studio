@@ -195,6 +195,10 @@ class StudioOrchestrator:
                 inferred_action = "generate_assets"
             elif intent_kind == "flow_music_audio_pipeline":
                 inferred_action = "flow_music_audio_pipeline"
+            elif intent_kind == "continue_ch02_audio":
+                inferred_action = "continue_ch02_audio"
+            elif intent_kind == "apply_audio_repair":
+                inferred_action = "apply_audio_repair"
             elif intent_kind == "assemble_palmier":
                 inferred_action = "assemble_palmier"
             elif intent_kind == "export_mp4":
@@ -204,7 +208,7 @@ class StudioOrchestrator:
             elif intent_kind == "full_pipeline":
                 inferred_action = "full_pipeline"
 
-        if inferred_action in ('consult_three_agents', 'resume_workflow') or str(inferred_action).startswith('production_'):
+        if inferred_action in ('consult_three_agents', 'resume_workflow', 'continue_ch02_audio', 'apply_audio_repair') or str(inferred_action).startswith('production_'):
             self.reset_stop()
 
         if inferred_action == 'consult_three_agents':
@@ -344,6 +348,25 @@ class StudioOrchestrator:
                     attachments.append({"label": f"{receipt.get('track_name')}.wav", "path": receipt["download_info"]["saved_path"]})
                 if s6a_file := pipeline_res["manifest"].get("steps", {}).get("step_6a_flow_music_audio_pipeline", {}).get("output_file"):
                     attachments.append({"label": "06a_flow_music_receipt.json", "path": str(s6a_file)})
+
+            elif inferred_action == "continue_ch02_audio":
+                pipeline_res = self.workflow.run_or_resume_ch02_audio_pipeline(
+                    episode_id="EP02_CH02",
+                    conversation_id=conversation_id,
+                )
+                result_payload = pipeline_res["manifest"]
+                reply_text = pipeline_res["reply_text"]
+                attachments.extend(pipeline_res.get("attachments", []))
+
+            elif inferred_action == "apply_audio_repair":
+                repair_res = self.workflow.apply_audio_repair(
+                    episode_id="EP02_CH02",
+                    decision_text=user_message,
+                    conversation_id=conversation_id,
+                )
+                result_payload = repair_res["manifest"]
+                reply_text = repair_res["reply_text"]
+                attachments.extend(repair_res.get("attachments", []))
 
             elif inferred_action == "assemble_palmier":
                 manifest = self.workflow.run_palmier_assembly(ep_id)
@@ -733,7 +756,9 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
     <header>
       <span id="conv-title">Episode 002 / CH01 — Studio Chat</span>
       <div style="display:flex;gap:6px;flex-wrap:wrap;">
-        <button class="primary" onclick="triggerAction('consult_three_agents')">1-4: 3-Agent Script</button>
+        <button class="primary" onclick="triggerAction('continue_ch02_audio')">Resume CH02 Audio</button>
+        <button onclick="triggerRepairPrompt()">Approve & Trim 4s</button>
+        <button onclick="triggerAction('consult_three_agents')">1-4: 3-Agent Script</button>
         <button onclick="triggerAction('generate_assets')">6: Assets</button>
         <button onclick="triggerAction('assemble_palmier')">7: Palmier</button>
         <button onclick="triggerAction('export_mp4')">8: MP4 Export</button>
@@ -783,7 +808,25 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
       document.getElementById('conv-title').innerText = conv.title || activeConversationId;
       document.getElementById('provider-select').value = conv.active_provider_id || 'codex_cli';
 
+      const ch02Wf = data.ch02_workflow || {};
+      const ch02Steps = ch02Wf.steps || {};
+      const ch02Html = ch02Wf.steps ? `
+        <div class="card" style="border-color:#3b82f6;">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <strong style="color:#60a5fa;">CH02 Audio Pipeline</strong>
+            <span class="badge ${ch02Wf.status === 'completed' ? 'ok' : 'warn'}">${ch02Wf.status || 'in_progress'}</span>
+          </div>
+          <div style="font-size:11px;color:#94a3b8;margin-top:2px;">Episode 002 / Chapter 02 (Color Garden)</div>
+          ${Object.entries(ch02Steps).map(([k, v]) => `
+            <div style="margin-top:5px;padding-top:4px;border-top:1px solid #334155;font-size:12px;">
+              <b>${k.replace('step_', '')}</b>: <span class="badge ${v.status === 'completed' ? 'ok' : 'warn'}">${v.status}</span>
+            </div>
+          `).join('')}
+        </div>
+      ` : '';
+
       const leftHtml = `
+        ${ch02Html}
         <div class="card">
           <strong>3-Agent Script Workflow (${wf.episode_id || 'EP03_COUNTING_FLOWERS'})</strong><br/>
           Status: <span class="badge ${wf.status === 'completed' ? 'ok' : 'warn'}">${wf.status || 'not_started'}</span>
@@ -819,12 +862,27 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
       document.getElementById('left-panel').innerHTML = leftHtml;
 
       const msgs = data.messages || [];
-      document.getElementById('chat-messages').innerHTML = msgs.map(m => `
-        <div class="msg ${m.role}">
-          <div class="msg-meta">${m.role.toUpperCase()} • ${m.provider_id || 'studio'} • ${m.created_at}</div>
-          <div>${m.content}</div>
-        </div>
-      `).join('');
+      document.getElementById('chat-messages').innerHTML = msgs.map(m => {
+        let attHtml = '';
+        if (m.attachments && m.attachments.length) {
+          attHtml = '<div style="margin-top:10px;padding-top:8px;border-top:1px solid #334155;"><strong>Attachments & Audio Controls:</strong>';
+          for (const att of m.attachments) {
+            attHtml += `<div style="margin-top:6px;font-size:12px;"><b>${att.label || 'File'}:</b> <span style="color:#94a3b8">${att.path}</span>`;
+            if (att.audio_url) {
+              attHtml += `<br/><audio controls src="${att.audio_url}" style="width:100%;margin-top:4px;height:36px;"></audio>`;
+            }
+            attHtml += `</div>`;
+          }
+          attHtml += '</div>';
+        }
+        return `
+          <div class="msg ${m.role}">
+            <div class="msg-meta">${m.role.toUpperCase()} • ${m.provider_id || 'studio'} • ${m.created_at}</div>
+            <div>${m.content}</div>
+            ${attHtml}
+          </div>
+        `;
+      }).join('');
 
       const rightHtml = `
         <div class="card">
@@ -879,7 +937,11 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
     async function triggerAction(actionName) {
       const provider = document.getElementById('provider-select').value;
       let defaultMsg = `Execute studio action: ${actionName}`;
-      if (actionName === 'consult_three_agents') {
+      if (actionName === 'continue_ch02_audio') {
+        defaultMsg = 'Continue Episode 002 CH02 audio production from its saved state. Reuse completed candidates and transcripts, resolve the next blocked step, and show me the review and available audio results.';
+      } else if (actionName === 'apply_audio_repair') {
+        defaultMsg = "Approve script change: keep 'Have a look at this one' and trim hold to 4s";
+      } else if (actionName === 'consult_three_agents') {
         defaultMsg = 'Research the next Mar and Kuku episode, consult Gemini and Manus, and save the proposed script.';
       } else if (actionName === 'resume_workflow') {
         defaultMsg = 'Resume the workflow';
@@ -905,6 +967,12 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
         })
       });
       await refreshState();
+    }
+
+    async function triggerRepairPrompt() {
+      const input = document.getElementById('chat-input');
+      input.value = "Approve script change: keep 'Have a look at this one' and trim hold to 4s";
+      await sendChat();
     }
 
     async function toggleTakeover(enable) {
@@ -1076,7 +1144,9 @@ def create_studio_app(policy: RootPolicy | None = None) -> Starlette:
         cid = request.query_params.get("conversation_id") or "conv-e02-ch01-main"
         conv = orchestrator.store.get_conversation(cid) or orchestrator._ensure_default_conversation()
         providers = await asyncio.to_thread(orchestrator.providers.check_providers_health)
-        wf_manifest = orchestrator.workflow.load_manifest(DEFAULT_TEST_EPISODE_ID)
+        ep_id = conv.get("active_episode_id") or DEFAULT_TEST_EPISODE_ID
+        wf_manifest = orchestrator.workflow.load_manifest(ep_id)
+        ch02_manifest = orchestrator.workflow.load_manifest("EP02_CH02_AUDIO")
         return JSONResponse(
             {
                 "conversation": conv,
@@ -1088,9 +1158,25 @@ def create_studio_app(policy: RootPolicy | None = None) -> Starlette:
                 "browser_takeover": orchestrator.browser.owner_takeover,
                 "mac_actions": orchestrator.store.list_mac_actions(conv["conversation_id"]),
                 "workflow": wf_manifest,
+                "ch02_workflow": ch02_manifest,
                 "cancel_event_set": orchestrator.cancel_event.is_set(),
             }
         )
+
+    async def api_audio(request: Request):
+        file_param = request.query_params.get("file")
+        if not file_param:
+            return JSONResponse({"error": "Missing 'file' parameter"}, status_code=400)
+        p = Path(file_param).resolve()
+        allowed_prefixes = list(orchestrator.policy.allowed_read_roots) + [
+            orchestrator.policy.output_root_resolved,
+            orchestrator.policy.production_root_resolved,
+        ]
+        if not any(str(p).startswith(str(prefix)) for prefix in allowed_prefixes):
+            return JSONResponse({"error": "Access denied: file outside permitted directories"}, status_code=403)
+        if not p.is_file():
+            return JSONResponse({"error": f"File not found: {p}"}, status_code=404)
+        return FileResponse(str(p), media_type="audio/wav")
 
     async def api_chat(request: Request) -> JSONResponse:
         body = await request.json()
@@ -1148,6 +1234,7 @@ def create_studio_app(policy: RootPolicy | None = None) -> Starlette:
             Route("/api/chat", api_chat, methods=["POST"]),
             Route("/api/browser/takeover", api_browser_takeover, methods=["POST"]),
             Route("/api/browser/preview", api_browser_preview, methods=["GET"]),
+            Route("/api/audio", api_audio, methods=["GET"]),
             Route("/api/stop", api_stop, methods=["POST"]),
         ]
     )

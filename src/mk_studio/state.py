@@ -269,6 +269,31 @@ class StateStore:
             )
         return artifact_id
 
+    def list_artifacts(
+        self,
+        *,
+        episode_id: str | None = None,
+        chapter_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        self.initialize_studio_schema()
+        with self._short_tx() as conn:
+            query = "SELECT * FROM artifacts WHERE 1=1"
+            params: list[Any] = []
+            if episode_id is not None:
+                query += " AND episode_id = ?"
+                params.append(episode_id)
+            if chapter_id is not None:
+                query += " AND chapter_id = ?"
+                params.append(chapter_id)
+            query += " ORDER BY created_at ASC"
+            rows = conn.execute(query, params).fetchall()
+            out = []
+            for r in rows:
+                d = dict(r)
+                d["metadata"] = json.loads(d.get("metadata_json") or "{}")
+                out.append(d)
+            return out
+
     def record_file_operation(
         self,
         *,
@@ -942,7 +967,13 @@ class StateStore:
                 "SELECT * FROM messages WHERE message_id = ?",
                 (mid,),
             ).fetchone()
-            return dict(row) if row else {}
+            if not row:
+                return {}
+            d = dict(row)
+            d["attachments"] = json.loads(d.get("attachments_json") or "[]")
+            d["citations"] = json.loads(d.get("citations_json") or "[]")
+            d["token_usage"] = json.loads(d.get("token_usage_json") or "{}")
+            return d
 
     def list_messages(self, conversation_id: str) -> list[dict[str, Any]]:
         self.initialize_studio_schema()
