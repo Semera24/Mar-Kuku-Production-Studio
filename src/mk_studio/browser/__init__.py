@@ -5,10 +5,12 @@ from mk_studio.browser.controller import (
     BrowserControlError,
     BrowserTakeoverActiveError,
 )
+from mk_studio.browser.flow_music import GoogleFlowMusicAdapter
 
 __all__ = [
     "BrowserController",
     "BrowserControlError",
     "BrowserTakeoverActiveError",
+    "GoogleFlowMusicAdapter",
 ]
 
