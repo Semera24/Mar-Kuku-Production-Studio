@@ -29,3 +29,4 @@ packages = ["src/mk_studio"]
 testpaths = ["tests"]
 pythonpath = ["src"]
 addopts = "-q"
+

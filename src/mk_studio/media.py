@@ -54,61 +54,61 @@ CH01_PINNED_INPUTS: dict[str, dict[str, Any]] = {
         "path": "/Users/yonassayfu/Desktop/DoroNesh_2D_Animation/01_ASSETS/CHARACTERS/MAR/02_OFFICIAL_POSES/Mar_Wave_v001.png",
         "sha256": "b846f9dddad49024d1b69f4c284866a29257d9ae424afa74faa539f45f4280cb",
         "approval_status": "approved_production",
-        "notes": "Official Mar waving pose (1024x1536 RGBA).",
+        "notes": "Official Mar waving pose (1084x1451 RGBA, 938,050 transparent pixels).",
     },
     "mar_introduce": {
         "path": "/Users/yonassayfu/Desktop/DoroNesh_2D_Animation/01_ASSETS/CHARACTERS/MAR/02_OFFICIAL_POSES/Mar_Introduce_Self_v001.png",
         "sha256": "73a550614c1946026e7fdba7d53717c7426f8841689f06dd6a6dac03d03897b5",
         "approval_status": "approved_production",
-        "notes": "Official Mar introduce-self pose (1024x1536 RGBA).",
+        "notes": "Official Mar introduce-self pose (1084x1451 RGBA, 950,346 transparent pixels).",
     },
     "mar_point_right": {
         "path": "/Users/yonassayfu/Desktop/DoroNesh_2D_Animation/01_ASSETS/CHARACTERS/MAR/02_OFFICIAL_POSES/Mar_Point_Right_v001.png",
         "sha256": "6adb67aba16a8bcc9b85163de93f732092f918b1b78088f1a76520725b03afbe",
         "approval_status": "approved_production",
-        "notes": "Official Mar pointing right pose (1024x1536 RGBA).",
+        "notes": "Official Mar pointing right pose (1084x1451 RGBA, 949,835 transparent pixels).",
     },
     "mar_listen": {
         "path": "/Users/yonassayfu/Desktop/DoroNesh_2D_Animation/01_ASSETS/CHARACTERS/MAR/02_OFFICIAL_POSES/Mar_Listen_v001.png",
         "sha256": "eb0e159f71c2d5e58c7030b608451baa0300db2669ec96a198ed8d31f914dee0",
         "approval_status": "approved_production",
-        "notes": "Official Mar listening hold pose (1024x1536 RGBA).",
+        "notes": "Official Mar listening hold pose (1084x1451 RGBA, 931,577 transparent pixels).",
     },
     "mar_happy": {
         "path": "/Users/yonassayfu/Desktop/DoroNesh_2D_Animation/01_ASSETS/CHARACTERS/MAR/02_OFFICIAL_POSES/Mar_Happy_v001.png",
         "sha256": "c30522ba918838f4b81179b5da93565fa4fc2a112413cdfc56b1104ed0273cf5",
         "approval_status": "approved_production",
-        "notes": "Official Mar happy pose (1024x1536 RGBA).",
+        "notes": "Official Mar happy pose (1084x1451 RGBA, 983,237 transparent pixels).",
     },
     "kuku_wave": {
         "path": "/Users/yonassayfu/Desktop/DoroNesh_2D_Animation/01_ASSETS/CHARACTERS/KUKU/02_OFFICIAL_POSES/Kuku_Wave_v001.png",
         "sha256": "f70c08b8bf2b5064ae27140b278d995a6d6df4abf6838258c71aeaf15675c331",
         "approval_status": "approved_production",
-        "notes": "Official Kuku waving pose (1024x1536 RGBA).",
+        "notes": "Official Kuku waving pose (1146x1372 RGBA, 881,142 transparent pixels).",
     },
     "kuku_happy": {
         "path": "/Users/yonassayfu/Desktop/DoroNesh_2D_Animation/01_ASSETS/CHARACTERS/KUKU/02_OFFICIAL_POSES/Kuku_Happy_v001.png",
         "sha256": "4ff0baf915ec2e0a41ed9568a09a12d44b3638bbf3948301bb73de800f61967d",
         "approval_status": "approved_production",
-        "notes": "Official Kuku happy pose (1024x1536 RGBA).",
+        "notes": "Official Kuku happy pose (1147x1372 RGBA, 887,652 transparent pixels).",
     },
     "kuku_think": {
         "path": "/Users/yonassayfu/Desktop/DoroNesh_2D_Animation/01_ASSETS/CHARACTERS/KUKU/02_OFFICIAL_POSES/Kuku_Think_HeadTilt_v001.png",
         "sha256": "f443e636c6407d003fb769dbcb8a5c62f84884be8bbdfc48c1d9eb9f8d26306e",
         "approval_status": "approved_production",
-        "notes": "Official Kuku head-tilt thinking/listening pose (1024x1536 RGBA).",
+        "notes": "Official Kuku head-tilt thinking/listening pose (1147x1372 RGBA, 921,436 transparent pixels).",
     },
     "kuku_point_right": {
         "path": "/Users/yonassayfu/Desktop/DoroNesh_2D_Animation/01_ASSETS/CHARACTERS/KUKU/02_OFFICIAL_POSES/Kuku_Point_Right_v001.png",
         "sha256": "4126a3521e4b006a4088ca9ce1e05156a4f42f2d87b92ddddfdaa6fb38e03721",
         "approval_status": "approved_production",
-        "notes": "Official Kuku pointing right pose (1024x1536 RGBA).",
+        "notes": "Official Kuku pointing right pose (1147x1372 RGBA, 882,835 transparent pixels).",
     },
     "prop_flower_red": {
         "path": "/Users/yonassayfu/Desktop/DoroNesh_2D_Animation/01_ASSETS/PROPS/EPISODE_002_COLOR_GARDEN/01_SOURCES/E02_Flower_Red_v001.png",
         "sha256": "e7486bd0536ec15fb75af3fb7ab5932a75ba1df6360faa8fb34e8ac0be2a7a79",
         "approval_status": "approved_production",
-        "notes": "E02 Red Flower prop source (1254x1254 RGBA; note opaque white background in source PNG).",
+        "notes": "E02 Red Flower prop source (1254x1254 RGBA, alpha range 0..255, 1,020,840 fully transparent pixels).",
     },
 }
 
@@ -419,6 +419,11 @@ def build_ch01_cues(candidate_wav: Path) -> list[CueEvent]:
     events: list[CueEvent] = []
     for cue_id, name, start_s, end_s, line in raw_cues:
         rms_dbfs, peak_pcm = measure_window_rms_dbfs(candidate_wav, start_s, end_s)
+        extra_note = (
+            " Provisional phrase onset (24.16s), NOT a verified word-level onset of 'red'."
+            if cue_id == "CUE_10_FIRST_FLOWER_RED"
+            else ""
+        )
         events.append(
             build_cue_event(
                 cue_id=cue_id,
@@ -427,7 +432,10 @@ def build_ch01_cues(candidate_wav: Path) -> list[CueEvent]:
                 candidate_end_seconds=end_s,
                 lyric_or_action=line,
                 authority="report_derived",
-                notes=f"Mapped from E02_CH01_AUDIO_EDIT_REVIEW_v001.md; measured window RMS={rms_dbfs} dBFS, peak_pcm={peak_pcm}.",
+                notes=(
+                    f"Provisional cue mapped from E02_CH01_AUDIO_EDIT_REVIEW_v001.md; "
+                    f"measured window RMS={rms_dbfs} dBFS, peak_pcm={peak_pcm}.{extra_note}"
+                ),
             )
         )
     return events
@@ -481,11 +489,15 @@ def bind_ch01_inputs(policy: RootPolicy) -> dict[str, Any]:
         "provenance_comparison": provenance.model_dump(),
         "frame_coverage_30fps": coverage,
         "palmier_transcription_capability": {
-            "inspect_media_supports_transcription": False,
+            "inspect_media_supports_transcription": True,
+            "inspect_media_supports_word_timestamps": True,
             "get_transcript_mcp_note": (
-                "Palmier inspect_media only samples visual frames. Palmier get_transcript reads cached clip "
-                "transcripts or requires Cloud credits when uncached; local Apple SpeechAnalyzer transcription "
-                "is only exposed via the interactive Caption tab UI."
+                "Both inspect_media (for a single source asset, with wordTimestamps=True) and get_transcript "
+                "(for the active timeline) expose transcription in Palmier MCP. Per Palmier's schema, the app "
+                "selects cloud transcription only when a signed-in account has enough credits and otherwise uses "
+                "local transcription, reporting transcriptionSource in the response. Local provider control and "
+                "word-level accuracy on sung music mixes must be verified on the imported asset before replacing "
+                "Manus transcript imports."
             ),
         },
         "cues": [c.model_dump() for c in cues],

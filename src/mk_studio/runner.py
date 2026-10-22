@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import fcntl
 import os
@@ -12,7 +13,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, IO, Iterator
 
 from mk_studio.state import StateStore, StepTicket
 
@@ -27,6 +28,10 @@ class ConcurrentRunError(RunnerError):
 
 class SubprocessCancelledError(RunnerError):
     """Raised when a child process group is cancelled or times out."""
+
+
+class PreSendValidationError(RunnerError, ValueError):
+    """Raised when a step fails local validation before any external request is sent."""
 
 
 @contextmanager
@@ -86,7 +91,6 @@ def terminate_process_group(
         return
 
 
-
 @dataclass(frozen=True)
 class SubprocessResult:
     """Completed subprocess result."""
@@ -97,6 +101,24 @@ class SubprocessResult:
     pid: int
 
 
+def _drain_pipe(stream: IO[str] | None, sink: list[str]) -> None:
+    if stream is None:
+        return
+    try:
+        while True:
+            chunk = stream.read(65536)
+            if not chunk:
+                break
+            sink.append(chunk)
+    except Exception:
+        pass
+    finally:
+        try:
+            stream.close()
+        except Exception:
+            pass
+
+
 def run_cancellable_subprocess(
     cmd: list[str],
     *,
@@ -105,7 +127,7 @@ def run_cancellable_subprocess(
     cwd: str | Path | None = None,
     check: bool = True,
 ) -> SubprocessResult:
-    """Run a command in its own process group and kill the group on cancel or timeout."""
+    """Run a command in its own process group, draining stdout/stderr concurrently, and kill the group on cancel/timeout."""
     proc = subprocess.Popen(
         cmd,
         cwd=str(cwd) if cwd else None,
@@ -117,43 +139,70 @@ def run_cancellable_subprocess(
     pgid = proc.pid
     start_time = time.monotonic()
 
+    stdout_chunks: list[str] = []
+    stderr_chunks: list[str] = []
+    out_thread = threading.Thread(
+        target=_drain_pipe,
+        args=(proc.stdout, stdout_chunks),
+        daemon=True,
+    )
+    err_thread = threading.Thread(
+        target=_drain_pipe,
+        args=(proc.stderr, stderr_chunks),
+        daemon=True,
+    )
+    out_thread.start()
+    err_thread.start()
+
     try:
         while True:
             if cancel_event is not None and cancel_event.is_set():
                 terminate_process_group(pgid, proc=proc)
-                proc.communicate()
+                proc.wait(timeout=2.0)
+                out_thread.join(timeout=1.0)
+                err_thread.join(timeout=1.0)
                 raise SubprocessCancelledError(f"Subprocess group {pgid} cancelled via cancel_event: {cmd[0]}")
 
             if timeout_seconds is not None and (time.monotonic() - start_time) > timeout_seconds:
                 terminate_process_group(pgid, proc=proc)
-                proc.communicate()
+                proc.wait(timeout=2.0)
+                out_thread.join(timeout=1.0)
+                err_thread.join(timeout=1.0)
                 raise SubprocessCancelledError(
                     f"Subprocess group {pgid} timed out after {timeout_seconds:.2f}s: {cmd[0]}"
                 )
 
             ret = proc.poll()
             if ret is not None:
-                stdout, stderr = proc.communicate()
+                out_thread.join(timeout=2.0)
+                err_thread.join(timeout=2.0)
+                stdout = "".join(stdout_chunks)
+                stderr = "".join(stderr_chunks)
                 result = SubprocessResult(
                     returncode=ret,
-                    stdout=stdout or "",
-                    stderr=stderr or "",
+                    stdout=stdout,
+                    stderr=stderr,
                     pid=pgid,
                 )
                 if check and ret != 0:
                     raise subprocess.CalledProcessError(ret, cmd, output=result.stdout, stderr=result.stderr)
                 return result
 
-            time.sleep(0.02)
+            time.sleep(0.01)
     except BaseException:
         if proc.poll() is None:
             terminate_process_group(pgid, proc=proc)
-            proc.communicate()
+            try:
+                proc.wait(timeout=1.0)
+            except Exception:
+                pass
+        out_thread.join(timeout=1.0)
+        err_thread.join(timeout=1.0)
         raise
 
 
 class StepRunner:
-    """Executes steps with short DB transactions and advisory run/editor locks."""
+    """Executes steps with short DB transactions and reentrant-aware advisory run/editor locks."""
 
     def __init__(self, store: StateStore, lock_dir: str | Path) -> None:
         self.store = store
@@ -161,16 +210,48 @@ class StepRunner:
         self.lock_dir.mkdir(parents=True, exist_ok=True)
         self.run_lock_path = self.lock_dir / "run.lock"
         self.editor_lock_path = self.lock_dir / "editor-writer.lock"
+        self._run_lock_depth = 0
+        self._run_lock_fd: int | None = None
+        self._editor_lock_depth = 0
+        self._editor_lock_fd: int | None = None
 
     @contextmanager
     def acquire_run_lock(self) -> Iterator[int]:
+        if self._run_lock_depth > 0 and self._run_lock_fd is not None:
+            self._run_lock_depth += 1
+            try:
+                yield self._run_lock_fd
+            finally:
+                self._run_lock_depth -= 1
+            return
+
         with advisory_file_lock(self.run_lock_path, lock_label="run") as fd:
-            yield fd
+            self._run_lock_fd = fd
+            self._run_lock_depth = 1
+            try:
+                yield fd
+            finally:
+                self._run_lock_depth = 0
+                self._run_lock_fd = None
 
     @contextmanager
     def acquire_editor_writer_lock(self) -> Iterator[int]:
+        if self._editor_lock_depth > 0 and self._editor_lock_fd is not None:
+            self._editor_lock_depth += 1
+            try:
+                yield self._editor_lock_fd
+            finally:
+                self._editor_lock_depth -= 1
+            return
+
         with advisory_file_lock(self.editor_lock_path, lock_label="editor-writer") as fd:
-            yield fd
+            self._editor_lock_fd = fd
+            self._editor_lock_depth = 1
+            try:
+                yield fd
+            finally:
+                self._editor_lock_depth = 0
+                self._editor_lock_fd = None
 
     def execute_step(
         self,
@@ -181,8 +262,9 @@ class StepRunner:
         input_hash: str,
         action: Callable[[StepTicket], dict[str, Any]],
         expected_output_path: str | Path | None = None,
+        target_scope: str | None = None,
     ) -> tuple[StepTicket, dict[str, Any]]:
-        """Execute a step only if not already completed for the same idempotency key."""
+        """Execute a step only if not already completed for the same target-scoped idempotency key."""
         lock_ctx = (
             self.acquire_editor_writer_lock()
             if step_kind == "editor_mutation"
@@ -195,18 +277,35 @@ class StepRunner:
                 step_kind=step_kind,
                 input_hash=input_hash,
                 expected_output_path=expected_output_path,
+                target_scope=target_scope,
             )
             if ticket.already_completed:
                 return ticket, ticket.cached_receipt
 
             try:
                 receipt = action(ticket) or {}
-            except Exception as exc:
+            except PreSendValidationError as exc:
                 self.store.finish_step(
                     ticket,
                     status="failed",
                     error_message=str(exc),
                 )
+                raise
+            except Exception as exc:
+                if step_kind == "editor_mutation":
+                    msg = f"UNKNOWN_EDITOR_OUTCOME: {exc}"
+                    self.store.finish_step(
+                        ticket,
+                        status="blocked",
+                        error_message=msg,
+                    )
+                    self.store.update_run_status(run_id, "blocked", error_message=msg)
+                else:
+                    self.store.finish_step(
+                        ticket,
+                        status="failed",
+                        error_message=str(exc),
+                    )
                 raise
 
             ext_id = receipt.get("external_target_id")
@@ -219,6 +318,3 @@ class StepRunner:
                 receipt=receipt,
             )
             return ticket, receipt
-
-
-import contextlib  # placed at module bottom for type cleanliness

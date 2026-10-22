@@ -99,3 +99,4 @@ CREATE TABLE IF NOT EXISTS file_operations (
     status TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+

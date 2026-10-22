@@ -296,3 +296,4 @@ def test_subprocess_group_cancellation(tmp_path: Path) -> None:
     time.sleep(0.05)
     with pytest.raises(ProcessLookupError):
         os.kill(grandchild_pid, 0)
+

@@ -217,3 +217,4 @@ def build_cue_event(
         authority=authority,  # type: ignore[arg-type]
         notes=notes,
     )
+

@@ -142,6 +142,10 @@ class PoseRegistration(StrictModel):
     head_top_x: float
     head_top_y: float
     reference_visible_height_px: float
+    transparent_pixel_count: int = 0
+    alpha_min: int = 0
+    alpha_max: int = 255
+    landmark_method: str = "visually_verified_interfoot_gap"
 
 
 class RegistrationCalibration(StrictModel):
@@ -306,7 +310,7 @@ class MarkerPlan(StrictModel):
     start_frame: int
     duration_frames: int = 0
     comment: str = ""
-    color: str = "blue"
+    color: str = "#3B82F6"
 
 
 class TimelinePlan(StrictModel):
@@ -327,3 +331,4 @@ class TimelinePlan(StrictModel):
     visual_overhang_samples: int
     tracks: list[TrackPlan]
     markers: list[MarkerPlan]
+

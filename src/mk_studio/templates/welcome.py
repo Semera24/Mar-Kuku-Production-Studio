@@ -96,8 +96,8 @@ def build_welcome_chapter_spec(
         shared_phase_origin_frame=0,
     )
 
-    mar_x, mar_y, mar_h = 0.28, 0.89, 0.58
-    kuku_x, kuku_y, kuku_h = 0.56, 0.89, 0.39
+    mar_x, mar_y, mar_h = 0.24, 0.935, 0.63
+    kuku_x, kuku_y, kuku_h = 0.46, 0.935, 0.40
 
     pose_spans = [
         # Mar contiguous hard-cut pose timeline (0..907)
@@ -268,7 +268,7 @@ def build_welcome_chapter_spec(
             start_frame=725,
             end_frame=total_frames,
             anchor_canvas_x=0.81,
-            anchor_canvas_y=0.86,
+            anchor_canvas_y=0.88,
             target_visible_height_Norm=0.28,
             cue_id="CUE_10_FIRST_FLOWER_RED",
         )
@@ -345,3 +345,4 @@ def build_ch01_proof_bundle(
     plan_out.write_text(json.dumps(plan.model_dump(), indent=2) + "\n", encoding="utf-8")
 
     return manifest, calibration, chapter_spec, plan
+

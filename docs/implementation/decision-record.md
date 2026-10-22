@@ -1,6 +1,10 @@
 # Decision record — 22 October 2026
 
-Status: proposed design for owner review; discovery completed, implementation not started.
+Status: M0 foundation implemented but not accepted after Codex review. The owner has expanded the current assignment to persistent studio chat, multiple AI connections, browser operation and broad Mac automation; see the scope update below. Earlier discovery/design statements are historical where superseded.
+
+## Owner scope update — 22 October 2026
+
+[Conversational producer, browser and Mac requirements](browser-chat-mac-requirements.md) are mandatory current product scope. The owner explicitly supersedes the earlier deferral of these features. [Antigravity's expanded task](antigravity-next-task-m0-repair.md) first repairs the reproduced M0 defects, then implements the local chat interface, real provider/browser connections and general computer-control services. M0 retains its scratch-only proof boundary; wider computer control operates task-authorized selected apps/folders while preserving EP01, shared approved art and reviewed-reorganization rules. The owner is willing to authenticate and grant OS permissions through normal flows. No passwords belong in prompts/source/logs; use direct sign-in and OS-protected storage. The older M0-only stop boundary no longer governs this expanded assignment.
 
 ## Authority and intent
 

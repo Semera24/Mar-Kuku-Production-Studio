@@ -1,52 +1,24 @@
-# Validation record — 22 October 2026
+# Validation Log — M0 CH01 & Live 3-Agent Browser Consultation Workflow (v003)
 
-Scope: discovery, planning, and Milestone M0 implementation/verification (`src/mk_studio/`, `tests/`, `scratch/ch01-proof/`).
+## 1. Automated Test Suite & M0 CH01 Verification
+- Command: `.venv/bin/pytest -q && .venv/bin/mk-studio verify-ch01`
+- Result: `44 passed` (`exit_code=0`)
+- Production Root Integrity: `279 / 279` files in `/Users/yonassayfu/Desktop/DoroNesh_2D_Animation/` byte-identical (`inventory_passed=true`).
+- Native Palmier Project (`scratch/ch01-proof/E02_CH01_Technical_Proof_v001.palmier`): `structure_valid=true`, `tracks_on_disk=5`, `clips_on_disk=16`, `markers_on_disk=10`, `reopen_verified=true`.
+- Exported 1080p30 MP4 (`scratch/ch01-proof/E02_CH01_Technical_Proof_1080p30_v001.mp4`): `nb_read_frames=907`, `video_stream_duration_seconds=30.233333`, `audio_stream_duration_seconds=30.200000` (source WAV `30.220000s`, `audio_duration_diff_seconds=0.020`), `decode_returncode=0`.
 
-## M0 Implementation & Test Verification (Antigravity)
-
-| Check | Observed result |
-| --- | --- |
-| Automated pytest suite (`.venv/bin/pytest -v`) | **28 passed in 2.02s** (`test_paths.py`: 9, `test_recovery.py`: 7, `test_timing.py`: 5, `test_scene.py`: 4, `test_editor_reconciliation.py`: 3) |
-| Production root immutability (`verify_production_inventory`) | **PASS** — all 96 production content records in `docs/implementation/inventory.json` remain byte- and SHA-256-identical (`TestAIProducer.palmier/project.json` also unchanged at `9538a346...`) |
-| Bit-identical CH01 audio edit reproduction | **PASS** — `scratch/ch01-proof/E02_CH01_Welcome_reproduced_v002.wav` (`1,450,560` stereo frames = `30.220000s` @ `48000 Hz`) matches `E02_CH01_Welcome_v002_EDIT_REVIEW_FULL_MIX.wav` with **`max_abs_sample_diff = 0` LSB** and **`rms_sample_diff = 0.0`** |
-| Cutout registration & grounded motion QA | **PASS** — across all 907 integer and half-frames, `max_foot_drift` is `0.0081–0.0084 px` (Mar), `0.0103–0.0107 px` (Kuku), `0.0291 px` (Red Flower prop) (`<= 2.0 px` required); `head_excursion` is `41.73–53.10 px` (Mar) and `38.69–41.45 px` (Kuku) (`>= 3.0 px` required); response hold (`frames 501..621`) excursion is `0.0000 px` |
-| SQLite durable state (`scratch/ch01-proof/state.db`) | **PASS** — all 7 tables created and populated (`episodes: 1`, `chapters: 1`, `approvals: 1`, `artifacts: 18`, `runs: 3`, `run_events: 2`, `file_operations: 4`) |
-| Native Palmier scratch creation check | Disassembled `PalmierPro.AppState.createProject(named:)` (`0x10176eee8`); confirmed MCP `create` rejects path components and writes only to `~/Documents/Palmier Pro/`. `mk-studio assemble-ch01` cleanly blocks with exit code `2` until the owner saves an empty `.palmier` project to `scratch/ch01-proof/E02_CH01_Technical_Proof_v001.palmier` via `Cmd+N` |
-
-## Discovery Checks (Previously Executed)
-
-| Check | Observed result |
-| --- | --- |
-| Required inputs and production references | Read the three requested documents, request attachment, E02 master/checkpoints/audio reviews, master guide and both PDF references; inspected historical project/snapshot JSON |
-| Environment | macOS/memory/CPU/disk via local commands; Python/uv/FFmpeg/ffprobe/Codex versions; editor Info.plist versions; relevant FFmpeg filters |
-| File inventory | 55 EP02 regular files + 43 explicit references; SHA-256, exact paths, sizes, stable size/mtime during read |
-| Media inspection | ffprobe for all inventoried WAV/PNG sources; PNG headers and decoded alpha planes measured without rewriting images |
-| Final source integrity | Rehashed all 98 inventory files after discovery; **98 unchanged, 0 changed paths** |
-| Mapping coverage | 55 TSV rows; exact set equality with inventoried EP02 paths; every row's source hash matches inventory |
-| Proposed copies | 33 copy rows coalesce to 30 distinct destinations; all still absent during final verification; no conflicting planned hashes |
-| Collision/path checks | Destination path components checked for symlinks and case/Unicode aliases; destination roots restricted to exact production root; no conflicts reported |
-| Audio alternatives | Four distinct CH02 original hashes; CH03 duplicate candidates match byte-for-byte; no selection/archive action |
-| Palmier connection | Official SDK 1.30.0 initialize/tools-list successful; 55 actual schemas; negotiated protocol 2025-11-25 |
-| Palmier read-only tools | Project list and empty TestAIProducer timeline read successful; no mutation/transcription/export calls |
-| Schema artifact | JSON parsed; 55 tools; SHA-256 `0c6b8e9b3a0292a11923f33adc7c174d8b65fbc7a4676698eeca2671475fea6e` matches captured evidence |
-
-Raw final integrity/mapping results: `scratch/discovery/validation-results.json`. Inventory probe: `scratch/discovery/inventory.py`; raw run log: `scratch/discovery/inventory-run.log`. The final validation independently reread and hashed sources; it did not trust only the initial inventory. Source integrity applies to the listed 98 files, **not a claim that every file anywhere under the production root was exhaustively hashed**.
-
-## Document self-review
-
-Reviewed plan against the attached request: retains full producer vision, CLI/Python/SQLite/FFmpeg/layout approach, future episode contracts, short transactions, approvals, cancellation/failure/restart evidence, single writer and scratch isolation. Explicitly defers infrastructure, walking choreography, UI until proof, Resolve, automatic generation and unmeasured guarantees. Uses live schemas and keeps binary/bundle, historical, schema and execution evidence separate.
-
-The plan contains a real CH01 proof with decode, foot-motion inspection between keys, native close/reopen and duplicate-free rerun. Source hashes/actual audio recipe govern cues. No source-art fixes, audio approvals, transcript accuracy or completed render are implied. Nine internal gates remain; previously recorded script/art approvals are preserved.
-
-Discovery artifacts and exact collision results are reviewable before production operations. The v002/v003 checklist conflict is preserved, not overwritten. No production writes or application implementation were performed by this task. Palmier's own historical project listing remains raw evidence and is not adopted as a root configuration.
-
-## Still unverified
-
-- Native project creation directly inside scratch (no create-path parameter documented by live MCP).
-- No-spend local Palmier transcription control and quality on actual chapter audio.
-- Foot landmarks, rendered alpha edges, editor pivot/interpolation and visual motion.
-- Native save/reopen with persistent animation; actual export/decode/timing; interruption-safe editor rerun.
-- Listening approval for CH01–CH03, CH02 take selection, CH04 content and matching stems.
-- Backup media independence after reopening; FCPXML fidelity; runtime/cost/automation targets.
-
-Next required decision is review of [implementation-plan.md](implementation-plan.md), explicitly requested by the owner before implementation. Production mapping approval is separate and is not needed to run M0 from current source paths.
+## 2. Live 3-Agent Browser Consultation Workflow Acceptance Test (`EP03_COUNTING_FLOWERS`)
+Executed through Studio's `/api/chat` endpoint against the managed visible Chrome session (`127.0.0.1:9222`, persistent profile `scratch/ch01-proof/browser-profile`):
+1. **Natural-Language Start + Stop After Step 1:**
+   - Instruction: `"Research the next Mar and Kuku episode, consult Gemini and Manus, and save the proposed script."`
+   - Completed `step_1_chatgpt_master_plan` on `https://chatgpt.com/uc/6ada036c-7d6c-83ea-93d8-22f8a413d90c` (`submission_count=1`, `sha256=d0453fb8eea6e47e1e40f7569229624f5882806d802d80a4dea8193e4d2d62db`) and halted cleanly at checkpoint `after_step_1` (`status="stopped"`).
+2. **Natural-Language Resume (`"Resume the workflow"`):**
+   - Skipped `step_1_chatgpt_master_plan` (`submission_count` remained `1`).
+   - Completed `step_2_gemini_review` on `https://gemini.google.com/app` (`submission_count=1`, `sha256=1db62d55b81600c39d3a08bb995708a771a6e08d388e8e8b6a5e8af886a5b9a9`).
+   - Completed `step_3_manus_specialist` on authenticated `https://manus.im/app/xVApR3Hc7uyqZAMjvXx48B` (`submission_count=1`, `status="completed"`, `sha256=2d7e9cfdeefa0800ebdd2ef255f041c8498ab105421d217c15918818fbfdbe32`).
+   - Completed `step_4_chatgpt_synthesis` on `https://chatgpt.com/uc/6ada03a5-9488-83ea-8e73-827efbd63964` (`submission_count=1`), writing `proposed_script_v001.md` (`sha256=bffd59a3a004f33f3c63be208da5c5f604ed5b7c86931e377f6a98c6646ecefb`).
+3. **Natural-Language Follow-Up Correction:**
+   - Instruction: `"Follow-up correction: Revise the proposed script so Kuku giggles 'One! Two! Three purple petals!' right after the 4-second response hold at frame 621."`
+   - Completed `step_5_followup_correction` (`submission_count=1`) via ChatGPT (`https://chatgpt.com/uc/6ada03a5-9488-83ea-8e73-827efbd63964`) + Gemini Reviewer confirmation (`https://gemini.google.com/app`), writing `proposed_script_v002.md` (`sha256=69d89a38466335201dc367eb9c6274da4a5240d5aa57889c4e8d6571ff54973a`) and updating `proposed_script.md` while keeping `submission_count=1` on Steps 1–4.
+4. **Application Restart / Reload Survival:**
+   - Re-instantiated `create_studio_app(policy)` and verified `/api/state` returned `workflow.status == "completed"`, `current_script_version == "v002"`, and all persisted chat messages and jobs in `scratch/ch01-proof/state.db`.

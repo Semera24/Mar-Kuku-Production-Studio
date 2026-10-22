@@ -197,3 +197,4 @@ def test_invalid_bounds_and_crossfade_rejected() -> None:
             candidate_end_seconds=5.0,
             lyric_or_action="bad",
         )
+

@@ -256,3 +256,4 @@ def test_episode_neutral_contracts_and_modules() -> None:
     assert plan.episode_id == "EPISODE_005"
     assert plan.chapter_id == "CH03"
     assert plan.total_frames == 90
+

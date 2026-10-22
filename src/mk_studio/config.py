@@ -31,10 +31,10 @@ class OutputExistsError(PathPolicyError, FileExistsError):
     """Raised when an output target already exists and overwrite is False."""
 
 
-def compute_sha256(path: Path, chunk_size: int = 1024 * 1024) -> str:
+def compute_sha256(path: str | Path, chunk_size: int = 1024 * 1024) -> str:
     """Compute hex SHA-256 digest of a file."""
     hasher = hashlib.sha256()
-    with path.open("rb") as handle:
+    with Path(path).open("rb") as handle:
         while chunk := handle.read(chunk_size):
             hasher.update(chunk)
     return hasher.hexdigest()

@@ -1,5 +1,7 @@
 # Antigravity implementation task — M0 CH01 proof
 
+> **Superseded task boundary:** the owner has expanded the current assignment. Use [the updated Antigravity task](antigravity-next-task-m0-repair.md) and [mandatory browser/chat/Mac requirements](browser-chat-mac-requirements.md). This original file remains M0 background; its instruction to stop after M0 no longer controls the expanded task.
+
 Prepared 22 October 2026, Africa/Addis_Ababa. This is a task for the owner to give Antigravity; it has not been sent automatically. When the owner pastes the kickoff below, proceed with the bounded M0 implementation. Production reorganization and later milestones remain outside this task.
 
 ## Paste-ready kickoff

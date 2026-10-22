@@ -496,11 +496,43 @@ def compile_scene(
         )
         next_track_idx += 1
 
-    # 3. Background track (bottom visual layer)
+    # 3. Background track (bottom visual layer, freezing subtle zoom during response hold window)
     bg_asset = asset_manifest.assets[chapter_spec.background_asset_id]
     s0 = chapter_spec.background_scale_start
     s1 = chapter_spec.background_scale_end
     last_f = max(0, chapter_spec.total_frames - 1)
+
+    hold_cue = next(
+        (c for c in chapter_spec.cues if "HOLD" in c.cue_id.upper() or "RESPONSE" in c.cue_id.upper()),
+        None,
+    )
+    if hold_cue and 0 < hold_cue.start_frame < hold_cue.end_frame < last_f:
+        h_start = hold_cue.start_frame
+        h_end = hold_cue.end_frame
+        active_frames = max(1, last_f - (h_end - h_start))
+        s_mid = round(s0 + (s1 - s0) * (float(h_start) / float(active_frames)), 8)
+        bg_pos_kf = [
+            KeyframeRow(frame_offset=0, values=[round((1.0 - s0) / 2.0, 8), round((1.0 - s0) / 2.0, 8)], interpolation="linear"),
+            KeyframeRow(frame_offset=h_start, values=[round((1.0 - s_mid) / 2.0, 8), round((1.0 - s_mid) / 2.0, 8)], interpolation="linear"),
+            KeyframeRow(frame_offset=h_end, values=[round((1.0 - s_mid) / 2.0, 8), round((1.0 - s_mid) / 2.0, 8)], interpolation="linear"),
+            KeyframeRow(frame_offset=last_f, values=[round((1.0 - s1) / 2.0, 8), round((1.0 - s1) / 2.0, 8)], interpolation="linear"),
+        ]
+        bg_scale_kf = [
+            KeyframeRow(frame_offset=0, values=[s0, s0], interpolation="linear"),
+            KeyframeRow(frame_offset=h_start, values=[s_mid, s_mid], interpolation="linear"),
+            KeyframeRow(frame_offset=h_end, values=[s_mid, s_mid], interpolation="linear"),
+            KeyframeRow(frame_offset=last_f, values=[s1, s1], interpolation="linear"),
+        ]
+    else:
+        bg_pos_kf = [
+            KeyframeRow(frame_offset=0, values=[round((1.0 - s0) / 2.0, 8), round((1.0 - s0) / 2.0, 8)], interpolation="linear"),
+            KeyframeRow(frame_offset=last_f, values=[round((1.0 - s1) / 2.0, 8), round((1.0 - s1) / 2.0, 8)], interpolation="linear"),
+        ]
+        bg_scale_kf = [
+            KeyframeRow(frame_offset=0, values=[s0, s0], interpolation="linear"),
+            KeyframeRow(frame_offset=last_f, values=[s1, s1], interpolation="linear"),
+        ]
+
     bg_clip = ClipPlan(
         clip_key=f"{chapter_spec.chapter_id}_bg_full",
         track_name="Background",
@@ -518,14 +550,8 @@ def compile_scene(
             height=s0,
             rotation=0.0,
         ),
-        position_keyframes=[
-            KeyframeRow(frame_offset=0, values=[(1.0 - s0) / 2.0, (1.0 - s0) / 2.0], interpolation="linear"),
-            KeyframeRow(frame_offset=last_f, values=[(1.0 - s1) / 2.0, (1.0 - s1) / 2.0], interpolation="linear"),
-        ],
-        scale_keyframes=[
-            KeyframeRow(frame_offset=0, values=[s0, s0], interpolation="linear"),
-            KeyframeRow(frame_offset=last_f, values=[s1, s1], interpolation="linear"),
-        ],
+        position_keyframes=bg_pos_kf,
+        scale_keyframes=bg_scale_kf,
         motion_mode="ken_burns_subtle",
     )
     tracks.append(
@@ -569,7 +595,7 @@ def compile_scene(
             start_frame=c.start_frame,
             duration_frames=0,
             comment=f"[{c.authority}] {c.lyric_or_action}",
-            color="blue" if c.authority == "report_derived" else "green",
+            color="#3B82F6" if c.authority == "report_derived" else "#10B981",
         )
         for c in chapter_spec.cues
     ]
@@ -678,6 +704,8 @@ def verify_plan_motion_and_registration(
                 "start_frame": clip.start_frame,
                 "end_frame": clip.end_frame,
                 "motion_mode": clip.motion_mode,
+                "analytic_prediction": True,
+                "max_analytic_foot_drift_px": max_foot_drift,
                 "max_foot_drift_px": max_foot_drift,
                 "head_excursion_px": head_excursion,
                 "passed": foot_ok and head_ok,
@@ -685,6 +713,7 @@ def verify_plan_motion_and_registration(
 
     return {
         "passed": all_passed,
+        "evaluation_mode": "analytic_prediction",
         "hold_window": {
             "start_frame": hold_start,
             "end_frame": hold_end,

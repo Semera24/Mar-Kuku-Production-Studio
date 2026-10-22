@@ -1,4 +1,34 @@
-# Mar and Kuku CH01 proof implementation plan
+# Mar and Kuku CH01 proof & full conversational studio implementation plan
+
+> **Current scope override (22 October 2026):** this file covers both the **M0 Repairs (R1–R8)** and the **Expanded Product Scope** (`browser-chat-mac-requirements.md` & `antigravity-next-task-m0-repair.md`): persistent application chat, multiple real AI provider connections, visible controlled browser back-and-forth, and broad Mac automation.
+
+## Concrete Stack & Architecture (Expanded Scope)
+
+- **Runtime & Dependencies:** Python `3.12.15` in `.venv`, locked with `uv.lock` (tracked in Git). Core packages: `mcp` (`2.3.0` official `ClientSession` + `streamablehttp_client`), `jsonschema` (`4.26.0`), `pydantic` (`2.14.1`), `pillow` (`13.0.0`), `starlette` (`1.9.0`), `uvicorn` (`0.54.0`), `sse-starlette` (`3.5.0`), `httpx2` (`2.16.0`), `pytest` (`9.1.1`).
+- **Stage 1 — M0 Repairs (R1–R8) & Synthetic Unit Test Separation:**
+  - **R1:** Single reentrant-aware editor-writer lock owned by `StepRunner` (`acquire_editor_writer_lock`), eliminating nested self-deadlock while blocking concurrent processes/runs.
+  - **R2:** Official `mcp` SDK client + `jsonschema` validation against `docs/implementation/palmier-tool-schemas.json`; singular `import_media(source=...)`, auto-created tracks via `add_clips` + `manage_tracks(set=..., reorder=...)`, single-item `manage_markers` with `#RRGGBB` hex colors.
+  - **R3:** Separate `verify-prep-ch01` (offline prep) from `verify-ch01` (full editor proof requiring native `.palmier`, reopen receipt, terminal export receipt, `907` decoded frames @ `1920x1080` `30/1` fps, stereo `48 kHz` audio, fresh PCM diff, and rendered frame samples).
+  - **R4:** Exact scratch project path + timeline ID guard, import boundary SHA-256 re-verification, DB-owned clip reconciliation, and full semantic comparison of transforms (`centerX`, `centerY`, `width`, `height`, `rotation`) and keyframes (`position`, `scale`, `rotation`).
+  - **R5:** Target-scoped idempotency key `(episode_id, chapter_id, target_id, step_name, step_kind, input_hash)` and `'blocked'` (`uncertain_outcome`) state on lost/timed-out mutation responses, requiring live external-state reconciliation before retry.
+  - **R6:** Non-destructive export (`overwrite=False`, versioned filenames `_v001.mp4`, `_v002.mp4`, persisted `jobId`, terminal `status == "completed"` check in `manage_exports`).
+  - **R7:** Concurrent `stdout`/`stderr` reader threads in `run_cancellable_subprocess` so `>1 MB` child output never deadlocks pipes.
+  - **R8:** Fix `rgba.getchannel("A").getextrema()` in `registration.py` (confirming `E02_Flower_Red_v001.png` has `1,020,840` transparent pixels), record visually verified support-foot landmarks, separate analytic predictions from rendered frame measurements, and verify rendered frames from Palmier (`inspect_timeline`/`capture_frame` and decoded MP4).
+- **Stage 2 — Live Native Scratch Palmier Proof:**
+  - Create native `scratch/ch01-proof/E02_CH01_Technical_Proof_v001.palmier` via Palmier's supported `export_project(mode="palmier", outputPath=..., overwrite=False)` from the empty project (or owner UI save if needed), open via `manage_project(action="open")`, assemble CH01, close/reopen, verify zero semantic drift, export MP4, decode all 907 frames, measure rendered grounding, and run duplicate-free second pass + interruption recovery test.
+- **Stage 3 — Persistent Conversational Studio (`src/mk_studio/studio/` & `migrations/002.sql`):**
+  - Local web application (`mk-studio serve` on `http://127.0.0.1:8765`) with SQLite tables for `conversations`, `chat_messages`, `provider_sessions`, `studio_jobs`, `browser_sessions`, and `mac_action_receipts`.
+  - Natural-language action router supporting episode/chapter selection, project inspection, audio/cue review, Palmier assembly/export, provider task dispatch, browser follow-up, Mac app control, follow-up context resolution ("use the other take", "change only that section"), and live Stop/Continue controls.
+- **Stage 4 — Multiple Real AI Provider Connections (`src/mk_studio/providers/`):**
+  - Unified `AiProviderAdapter` interface (`discover`, `auth_status`, `send_prompt`, `cancel`) with provenance & budget ceiling enforcement, backed by:
+    1. `CodexCliProvider` (installed `/Users/yonassayfu/.local/state/fnm_multishells/.../bin/codex` / `/opt/homebrew/bin/node` CLI),
+    2. `GeminiCliProvider` (installed `/opt/homebrew/bin/gemini` CLI),
+    3. `BrowserWebProvider` (driving visible Chrome sessions for web AI tools),
+    with secret references stored in macOS Keychain (`/usr/bin/security`).
+- **Stage 5 — Visible Controlled Browser (`src/mk_studio/browser/`):**
+  - Managed visible Google Chrome controller using Chrome DevTools Protocol (CDP over WebSocket/HTTP with dedicated persistent user-data-dir `scratch/browser-profile/`) supporting real navigation, DOM state inspection, input filling, prompt submission, completion detection (DOM stability + stop-button disappearance), follow-up turns, owner takeover/return-control, and verified upload/download intake into episode scratch folders.
+- **Stage 6 — Broad Mac Control Service (`src/mk_studio/mac/`):**
+  - Profile-governed Mac automation service (`AppProfile`, `FolderProfile`) supporting app discovery/launch/focus (`NSWorkspace`/`open`/`osascript`), window/screen inspection (`CGWindowListCopyWindowInfo` via Swift/Quartz + `screencapture`), AppleScript/JXA app actions, keyboard/mouse UI fallback (reporting exact `AXIsProcessTrusted` Accessibility status), observed postconditions on every action, and Stop/Cancel integration.
 
 > Execution after owner review: inline in this local workspace using `superpowers:executing-plans`. No parallel agents, cloud projects, or application implementation in the discovery turn.
 

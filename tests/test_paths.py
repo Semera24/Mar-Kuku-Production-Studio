@@ -130,3 +130,4 @@ def test_resolve_output_symlink_escape_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(PathPolicyError, match="Symlink escape"):
         policy.resolve_output(file_link, overwrite=True)
+

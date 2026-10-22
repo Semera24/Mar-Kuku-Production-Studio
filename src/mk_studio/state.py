@@ -16,14 +16,23 @@ from typing import Any, Callable, Iterator
 from mk_studio.config import compute_sha256
 
 MIGRATION_001_PATH = Path(__file__).parent / "migrations" / "001.sql"
+MIGRATION_002_PATH = Path(__file__).parent / "migrations" / "002.sql"
 
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def compute_idempotency_key(step_name: str, step_kind: str, input_hash: str) -> str:
-    raw = f"{step_name}|{step_kind}|{input_hash}".encode("utf-8")
+def compute_idempotency_key(
+    step_name: str,
+    step_kind: str,
+    input_hash: str,
+    *,
+    episode_id: str = "",
+    chapter_id: str = "",
+    target_scope: str = "",
+) -> str:
+    raw = f"{episode_id}|{chapter_id}|{target_scope}|{step_name}|{step_kind}|{input_hash}".encode("utf-8")
     return hashlib.sha256(raw).hexdigest()
 
 
@@ -133,6 +142,7 @@ class StateStore:
         audio_duration_seconds: float | None = None,
         audio_total_samples: int | None = None,
         total_frames: int | None = None,
+        palmier_project_path: str | None = None,
         status: str = "in_progress",
     ) -> str:
         chapter_key = f"{episode_id}:{chapter_id}"
@@ -381,16 +391,42 @@ class StateStore:
         step_kind: str,
         input_hash: str,
         expected_output_path: str | Path | None = None,
+        target_scope: str | None = None,
     ) -> StepTicket:
         """Start or short-circuit a step using a short SQLite transaction."""
-        idem_key = compute_idempotency_key(step_name, step_kind, input_hash)
         exp_path_str = str(Path(expected_output_path).resolve(strict=False)) if expected_output_path else None
         now = utc_now_iso()
 
         with self._short_tx() as conn:
+            run_row = conn.execute(
+                "SELECT episode_id, chapter_id FROM runs WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+            episode_id = str(run_row["episode_id"] or "") if run_row else ""
+            chapter_id = str(run_row["chapter_id"] or "") if run_row else ""
+            eff_scope = target_scope if target_scope is not None else (exp_path_str or "")
+
+            idem_key = compute_idempotency_key(
+                step_name,
+                step_kind,
+                input_hash,
+                episode_id=episode_id,
+                chapter_id=chapter_id,
+                target_scope=eff_scope,
+            )
+
             prior_rows = conn.execute(
-                "SELECT * FROM run_events WHERE step_name = ? ORDER BY started_at DESC",
-                (step_name,),
+                """
+                SELECT re.*
+                FROM run_events re
+                JOIN runs r ON r.run_id = re.run_id
+                WHERE re.step_name = ?
+                  AND r.episode_id = ?
+                  AND COALESCE(r.chapter_id, '') = ?
+                  AND COALESCE(re.expected_output_path, '') = ?
+                ORDER BY re.started_at DESC
+                """,
+                (step_name, episode_id, chapter_id, exp_path_str or ""),
             ).fetchall()
 
             for row in prior_rows:
@@ -403,7 +439,7 @@ class StateStore:
                         f"Step '{step_name}' has an interrupted running event ({row['event_id']}); call reconcile_run() first."
                     )
 
-            # Invalidate prior succeeded/reconciled receipts if input_hash changed
+            # Invalidate prior succeeded/reconciled receipts within the same episode/chapter/target scope if input_hash changed
             conn.execute(
                 """
                 UPDATE run_events
@@ -411,8 +447,12 @@ class StateStore:
                 WHERE step_name = ?
                   AND status IN ('succeeded', 'reconciled')
                   AND input_hash != ?
+                  AND COALESCE(expected_output_path, '') = ?
+                  AND run_id IN (
+                      SELECT run_id FROM runs WHERE episode_id = ? AND COALESCE(chapter_id, '') = ?
+                  )
                 """,
-                (step_name, input_hash),
+                (step_name, input_hash, exp_path_str or "", episode_id, chapter_id),
             )
 
             # Check for matching valid receipt
@@ -539,23 +579,27 @@ class StateStore:
         run_id: str | None = None,
         *,
         output_validator: Callable[[Path], bool] | None = None,
-        editor_inspector: Callable[[dict[str, Any]], tuple[bool, str | None, dict[str, Any]]] | None = None,
+        editor_inspector: Callable[[dict[str, Any]], tuple[bool | str, str | None, dict[str, Any]]] | None = None,
     ) -> ReconciliationSummary:
-        """Reconcile any interrupted 'running' step events before retrying or resuming."""
+        """Reconcile any interrupted 'running' (or 'blocked' when editor_inspector is given) step events."""
         reconciled: list[str] = []
         blocked: list[str] = []
         failed: list[str] = []
         invalidated: list[str] = []
 
+        target_statuses = ("running", "blocked") if editor_inspector is not None else ("running",)
+        placeholders = ",".join("?" for _ in target_statuses)
+
         with self._short_tx() as conn:
             if run_id:
                 running_rows = conn.execute(
-                    "SELECT * FROM run_events WHERE run_id = ? AND status = 'running' ORDER BY started_at ASC",
-                    (run_id,),
+                    f"SELECT * FROM run_events WHERE run_id = ? AND status IN ({placeholders}) ORDER BY started_at ASC",
+                    (run_id, *target_statuses),
                 ).fetchall()
             else:
                 running_rows = conn.execute(
-                    "SELECT * FROM run_events WHERE status = 'running' ORDER BY started_at ASC"
+                    f"SELECT * FROM run_events WHERE status IN ({placeholders}) ORDER BY started_at ASC",
+                    target_statuses,
                 ).fetchall()
             events = [dict(r) for r in running_rows]
 
@@ -633,17 +677,23 @@ class StateStore:
                     failed.append(ev_id)
 
             elif step_kind == "editor_mutation":
-                verified = False
+                verified: bool | str = False
                 ext_id: str | None = None
                 receipt_data: dict[str, Any] = {}
                 if editor_inspector is not None:
                     try:
-                        verified, ext_id, receipt_data = editor_inspector(ev)
+                        insp_res = editor_inspector(ev)
+                        if isinstance(insp_res, tuple) and len(insp_res) == 3:
+                            verified, ext_id, receipt_data = insp_res
+                        else:
+                            verified = insp_res  # type: ignore[assignment]
+                            ext_id = None
+                            receipt_data = {"inspector_result": str(insp_res)}
                     except Exception as exc:
                         verified = False
                         receipt_data = {"inspector_error": str(exc)}
 
-                if verified:
+                if verified is True or verified == "applied":
                     with self._short_tx() as conn:
                         conn.execute(
                             """
@@ -651,16 +701,35 @@ class StateStore:
                             SET status = 'reconciled',
                                 external_target_id = ?,
                                 receipt_json = ?,
+                                error_message = NULL,
                                 finished_at = ?
                             WHERE event_id = ?
                             """,
                             (ext_id, json.dumps(receipt_data, sort_keys=True), now, ev_id),
                         )
                         conn.execute(
-                            "UPDATE runs SET status = 'reconciled', finished_at = ? WHERE run_id = ? AND status = 'running'",
+                            "UPDATE runs SET status = 'reconciled', error_message = NULL, finished_at = ? WHERE run_id = ? AND status IN ('running', 'blocked')",
                             (now, ev_run_id),
                         )
                     reconciled.append(ev_id)
+                elif verified == "absent":
+                    with self._short_tx() as conn:
+                        conn.execute(
+                            """
+                            UPDATE run_events
+                            SET status = 'failed',
+                                error_message = 'Reconciled: remote mutation verified absent; safe to retry',
+                                receipt_json = ?,
+                                finished_at = ?
+                            WHERE event_id = ?
+                            """,
+                            (json.dumps(receipt_data, sort_keys=True), now, ev_id),
+                        )
+                        conn.execute(
+                            "UPDATE runs SET status = 'failed', error_message = 'Step verified absent after interruption', finished_at = ? WHERE run_id = ? AND status IN ('running', 'blocked')",
+                            (now, ev_run_id),
+                        )
+                    failed.append(ev_id)
                 else:
                     msg = (
                         f"UNKNOWN_EDITOR_OUTCOME: step '{step_name}' interrupted during editor mutation and state "
@@ -703,3 +772,524 @@ class StateStore:
             failed_events=failed,
             invalidated_events=invalidated,
         )
+
+    def initialize_studio_schema(self) -> None:
+        """Apply migration 002.sql for persistent chat, AI providers, browser tasks, and Mac control."""
+        if not MIGRATION_002_PATH.is_file():
+            return
+        sql = MIGRATION_002_PATH.read_text(encoding="utf-8")
+        with self._short_tx() as conn:
+            conn.executescript(sql)
+
+    # ------------------------------------------------------------------
+    # Persistent Studio Conversations, Messages, and Jobs
+    # ------------------------------------------------------------------
+
+    def create_conversation(
+        self,
+        *,
+        title: str = "Episode 002 / CH01 Studio Session",
+        conversation_id: str | None = None,
+        active_episode_id: str = "EPISODE_002",
+        active_chapter_id: str = "CH01",
+        active_project_path: str = "",
+        active_browser_session_id: str = "default-chrome-cdp",
+        active_mac_profile: str = "editor_automation",
+        active_provider_id: str = "codex_cli",
+    ) -> dict[str, Any]:
+        self.initialize_studio_schema()
+        cid = conversation_id or f"conv-{uuid.uuid4().hex[:12]}"
+        now = utc_now_iso()
+        with self._short_tx() as conn:
+            conn.execute(
+                """
+                INSERT INTO conversations (
+                    conversation_id, title, active_episode_id, active_chapter_id,
+                    active_project_path, active_browser_session_id, active_mac_profile,
+                    active_provider_id, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(conversation_id) DO UPDATE SET
+                    title = excluded.title,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    cid,
+                    title,
+                    active_episode_id,
+                    active_chapter_id,
+                    active_project_path,
+                    active_browser_session_id,
+                    active_mac_profile,
+                    active_provider_id,
+                    now,
+                    now,
+                ),
+            )
+            row = conn.execute(
+                "SELECT * FROM conversations WHERE conversation_id = ?",
+                (cid,),
+            ).fetchone()
+            return dict(row) if row else {}
+
+    def get_conversation(self, conversation_id: str) -> dict[str, Any] | None:
+        self.initialize_studio_schema()
+        with self._short_tx() as conn:
+            row = conn.execute(
+                "SELECT * FROM conversations WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def list_conversations(self) -> list[dict[str, Any]]:
+        self.initialize_studio_schema()
+        with self._short_tx() as conn:
+            rows = conn.execute(
+                "SELECT * FROM conversations ORDER BY updated_at DESC"
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def update_conversation_context(
+        self,
+        conversation_id: str,
+        *,
+        title: str | None = None,
+        active_episode_id: str | None = None,
+        active_chapter_id: str | None = None,
+        active_project_path: str | None = None,
+        active_browser_session_id: str | None = None,
+        active_mac_profile: str | None = None,
+        active_provider_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        self.initialize_studio_schema()
+        now = utc_now_iso()
+        with self._short_tx() as conn:
+            conn.execute(
+                """
+                UPDATE conversations
+                SET title = COALESCE(?, title),
+                    active_episode_id = COALESCE(?, active_episode_id),
+                    active_chapter_id = COALESCE(?, active_chapter_id),
+                    active_project_path = COALESCE(?, active_project_path),
+                    active_browser_session_id = COALESCE(?, active_browser_session_id),
+                    active_mac_profile = COALESCE(?, active_mac_profile),
+                    active_provider_id = COALESCE(?, active_provider_id),
+                    updated_at = ?
+                WHERE conversation_id = ?
+                """,
+                (
+                    title,
+                    active_episode_id,
+                    active_chapter_id,
+                    active_project_path,
+                    active_browser_session_id,
+                    active_mac_profile,
+                    active_provider_id,
+                    now,
+                    conversation_id,
+                ),
+            )
+            row = conn.execute(
+                "SELECT * FROM conversations WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def add_message(
+        self,
+        *,
+        conversation_id: str,
+        role: str,
+        content: str,
+        provider_id: str | None = None,
+        job_id: str | None = None,
+        attachments: list[dict[str, Any]] | None = None,
+        citations: list[dict[str, Any]] | None = None,
+        token_usage: dict[str, Any] | None = None,
+        message_id: str | None = None,
+    ) -> dict[str, Any]:
+        self.initialize_studio_schema()
+        mid = message_id or f"msg-{uuid.uuid4().hex[:12]}"
+        now = utc_now_iso()
+        with self._short_tx() as conn:
+            conn.execute(
+                """
+                INSERT INTO messages (
+                    message_id, conversation_id, role, content,
+                    provider_id, job_id, attachments_json, citations_json,
+                    token_usage_json, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    mid,
+                    conversation_id,
+                    role,
+                    content,
+                    provider_id,
+                    job_id,
+                    json.dumps(attachments or []),
+                    json.dumps(citations or []),
+                    json.dumps(token_usage or {}),
+                    now,
+                ),
+            )
+            conn.execute(
+                "UPDATE conversations SET updated_at = ? WHERE conversation_id = ?",
+                (now, conversation_id),
+            )
+            row = conn.execute(
+                "SELECT * FROM messages WHERE message_id = ?",
+                (mid,),
+            ).fetchone()
+            return dict(row) if row else {}
+
+    def list_messages(self, conversation_id: str) -> list[dict[str, Any]]:
+        self.initialize_studio_schema()
+        with self._short_tx() as conn:
+            rows = conn.execute(
+                "SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC",
+                (conversation_id,),
+            ).fetchall()
+            out = []
+            for r in rows:
+                d = dict(r)
+                d["attachments"] = json.loads(d.get("attachments_json") or "[]")
+                d["citations"] = json.loads(d.get("citations_json") or "[]")
+                d["token_usage"] = json.loads(d.get("token_usage_json") or "{}")
+                out.append(d)
+            return out
+
+    def create_job(
+        self,
+        *,
+        job_type: str,
+        summary: str = "",
+        conversation_id: str | None = None,
+        status: str = "running",
+        job_id: str | None = None,
+    ) -> dict[str, Any]:
+        self.initialize_studio_schema()
+        jid = job_id or f"job-{uuid.uuid4().hex[:12]}"
+        now = utc_now_iso()
+        with self._short_tx() as conn:
+            conn.execute(
+                """
+                INSERT INTO jobs (
+                    job_id, conversation_id, job_type, status,
+                    summary, logs_json, result_json, cancel_requested,
+                    created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, '[]', '{}', 0, ?, ?)
+                """,
+                (jid, conversation_id, job_type, status, summary, now, now),
+            )
+            row = conn.execute("SELECT * FROM jobs WHERE job_id = ?", (jid,)).fetchone()
+            return dict(row) if row else {}
+
+    def update_job(
+        self,
+        job_id: str,
+        *,
+        status: str | None = None,
+        summary: str | None = None,
+        append_log: str | None = None,
+        result: dict[str, Any] | None = None,
+        cancel_requested: bool | None = None,
+    ) -> dict[str, Any] | None:
+        self.initialize_studio_schema()
+        now = utc_now_iso()
+        with self._short_tx() as conn:
+            row = conn.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+            if not row:
+                return None
+            logs = json.loads(row["logs_json"] or "[]")
+            if append_log:
+                logs.append({"ts": now, "line": append_log})
+            res_json = json.dumps(result) if result is not None else row["result_json"]
+            cancel_int = (
+                (1 if cancel_requested else 0)
+                if cancel_requested is not None
+                else int(row["cancel_requested"])
+            )
+            conn.execute(
+                """
+                UPDATE jobs
+                SET status = COALESCE(?, status),
+                    summary = COALESCE(?, summary),
+                    logs_json = ?,
+                    result_json = ?,
+                    cancel_requested = ?,
+                    updated_at = ?
+                WHERE job_id = ?
+                """,
+                (
+                    status,
+                    summary,
+                    json.dumps(logs),
+                    res_json,
+                    cancel_int,
+                    now,
+                    job_id,
+                ),
+            )
+            updated = conn.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+            return dict(updated) if updated else None
+
+    def get_job(self, job_id: str) -> dict[str, Any] | None:
+        self.initialize_studio_schema()
+        with self._short_tx() as conn:
+            row = conn.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+            if not row:
+                return None
+            d = dict(row)
+            d["logs"] = json.loads(d.get("logs_json") or "[]")
+            d["result"] = json.loads(d.get("result_json") or "{}")
+            return d
+
+    def list_jobs(self, conversation_id: str | None = None) -> list[dict[str, Any]]:
+        self.initialize_studio_schema()
+        with self._short_tx() as conn:
+            if conversation_id:
+                rows = conn.execute(
+                    "SELECT * FROM jobs WHERE conversation_id = ? ORDER BY updated_at DESC",
+                    (conversation_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM jobs ORDER BY updated_at DESC").fetchall()
+            out = []
+            for r in rows:
+                d = dict(r)
+                d["logs"] = json.loads(d.get("logs_json") or "[]")
+                d["result"] = json.loads(d.get("result_json") or "{}")
+                out.append(d)
+            return out
+
+    # ------------------------------------------------------------------
+    # AI Provider Configurations & Budget Tracking
+    # ------------------------------------------------------------------
+
+    def upsert_provider_config(
+        self,
+        *,
+        provider_id: str,
+        display_name: str,
+        provider_kind: str,
+        enabled: bool = True,
+        keychain_service: str = "",
+        budget_limit_usd: float = 5.0,
+        status: str = "unknown",
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        self.initialize_studio_schema()
+        now = utc_now_iso()
+        with self._short_tx() as conn:
+            conn.execute(
+                """
+                INSERT INTO provider_configs (
+                    provider_id, display_name, provider_kind, enabled,
+                    keychain_service, budget_limit_usd, spent_usd, calls_count,
+                    status, last_checked_at, metadata_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, 0.0, 0, ?, ?, ?)
+                ON CONFLICT(provider_id) DO UPDATE SET
+                    display_name = excluded.display_name,
+                    provider_kind = excluded.provider_kind,
+                    enabled = excluded.enabled,
+                    keychain_service = CASE WHEN excluded.keychain_service != '' THEN excluded.keychain_service ELSE provider_configs.keychain_service END,
+                    budget_limit_usd = excluded.budget_limit_usd,
+                    status = excluded.status,
+                    last_checked_at = excluded.last_checked_at,
+                    metadata_json = excluded.metadata_json
+                """,
+                (
+                    provider_id,
+                    display_name,
+                    provider_kind,
+                    1 if enabled else 0,
+                    keychain_service,
+                    budget_limit_usd,
+                    status,
+                    now,
+                    json.dumps(metadata or {}),
+                ),
+            )
+            row = conn.execute(
+                "SELECT * FROM provider_configs WHERE provider_id = ?",
+                (provider_id,),
+            ).fetchone()
+            return dict(row) if row else {}
+
+    def record_provider_usage(
+        self,
+        provider_id: str,
+        *,
+        estimated_cost_usd: float = 0.0,
+    ) -> None:
+        self.initialize_studio_schema()
+        with self._short_tx() as conn:
+            conn.execute(
+                """
+                UPDATE provider_configs
+                SET spent_usd = spent_usd + ?,
+                    calls_count = calls_count + 1
+                WHERE provider_id = ?
+                """,
+                (float(estimated_cost_usd), provider_id),
+            )
+
+    def list_provider_configs(self) -> list[dict[str, Any]]:
+        self.initialize_studio_schema()
+        with self._short_tx() as conn:
+            rows = conn.execute(
+                "SELECT * FROM provider_configs ORDER BY provider_id ASC"
+            ).fetchall()
+            out = []
+            for r in rows:
+                d = dict(r)
+                d["metadata"] = json.loads(d.get("metadata_json") or "{}")
+                out.append(d)
+            return out
+
+    # ------------------------------------------------------------------
+    # Browser Tasks & Mac Control Actions
+    # ------------------------------------------------------------------
+
+    def record_browser_task(
+        self,
+        *,
+        session_id: str,
+        action_kind: str,
+        status: str,
+        url: str = "",
+        title: str = "",
+        conversation_id: str | None = None,
+        owner_takeover: bool = False,
+        artifact_path: str | None = None,
+        artifact_sha256: str | None = None,
+        summary: dict[str, Any] | None = None,
+        task_id: str | None = None,
+    ) -> dict[str, Any]:
+        self.initialize_studio_schema()
+        tid = task_id or f"btask-{uuid.uuid4().hex[:12]}"
+        now = utc_now_iso()
+        with self._short_tx() as conn:
+            conn.execute(
+                """
+                INSERT INTO browser_tasks (
+                    task_id, conversation_id, session_id, url, title,
+                    action_kind, status, owner_takeover, artifact_path,
+                    artifact_sha256, summary_json, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(task_id) DO UPDATE SET
+                    url = excluded.url,
+                    title = excluded.title,
+                    status = excluded.status,
+                    owner_takeover = excluded.owner_takeover,
+                    artifact_path = COALESCE(excluded.artifact_path, browser_tasks.artifact_path),
+                    artifact_sha256 = COALESCE(excluded.artifact_sha256, browser_tasks.artifact_sha256),
+                    summary_json = excluded.summary_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    tid,
+                    conversation_id,
+                    session_id,
+                    url,
+                    title,
+                    action_kind,
+                    status,
+                    1 if owner_takeover else 0,
+                    artifact_path,
+                    artifact_sha256,
+                    json.dumps(summary or {}),
+                    now,
+                    now,
+                ),
+            )
+            row = conn.execute(
+                "SELECT * FROM browser_tasks WHERE task_id = ?",
+                (tid,),
+            ).fetchone()
+            return dict(row) if row else {}
+
+    def list_browser_tasks(self, conversation_id: str | None = None) -> list[dict[str, Any]]:
+        self.initialize_studio_schema()
+        with self._short_tx() as conn:
+            if conversation_id:
+                rows = conn.execute(
+                    "SELECT * FROM browser_tasks WHERE conversation_id = ? ORDER BY updated_at DESC",
+                    (conversation_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM browser_tasks ORDER BY updated_at DESC").fetchall()
+            out = []
+            for r in rows:
+                d = dict(r)
+                d["summary"] = json.loads(d.get("summary_json") or "{}")
+                out.append(d)
+            return out
+
+    def record_mac_action(
+        self,
+        *,
+        profile_name: str,
+        action_kind: str,
+        target_app: str = "",
+        command_or_script: str = "",
+        expected_postcondition: str = "",
+        observed_postcondition: str = "",
+        status: str = "succeeded",
+        requires_approval: bool = False,
+        approved_by: str | None = None,
+        conversation_id: str | None = None,
+        action_id: str | None = None,
+    ) -> dict[str, Any]:
+        self.initialize_studio_schema()
+        aid = action_id or f"mac-{uuid.uuid4().hex[:12]}"
+        now = utc_now_iso()
+        with self._short_tx() as conn:
+            conn.execute(
+                """
+                INSERT INTO mac_actions (
+                    action_id, conversation_id, profile_name, action_kind,
+                    target_app, command_or_script, expected_postcondition,
+                    observed_postcondition, status, requires_approval,
+                    approved_by, created_at, finished_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    aid,
+                    conversation_id,
+                    profile_name,
+                    action_kind,
+                    target_app,
+                    command_or_script,
+                    expected_postcondition,
+                    observed_postcondition,
+                    status,
+                    1 if requires_approval else 0,
+                    approved_by,
+                    now,
+                    now,
+                ),
+            )
+            row = conn.execute(
+                "SELECT * FROM mac_actions WHERE action_id = ?",
+                (aid,),
+            ).fetchone()
+            return dict(row) if row else {}
+
+    def list_mac_actions(self, conversation_id: str | None = None) -> list[dict[str, Any]]:
+        self.initialize_studio_schema()
+        with self._short_tx() as conn:
+            if conversation_id:
+                rows = conn.execute(
+                    "SELECT * FROM mac_actions WHERE conversation_id = ? ORDER BY created_at DESC",
+                    (conversation_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM mac_actions ORDER BY created_at DESC").fetchall()
+            return [dict(r) for r in rows]

@@ -1,11 +1,13 @@
-"""Command-line interface for mk-studio M0 technical proof."""
+"""Command-line interface for mk-studio M0 technical proof and local studio server."""
 
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
+import shutil
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -99,7 +101,7 @@ def cmd_bind_ch01(policy: RootPolicy) -> int:
                 "summary": summary,
             }
 
-        _, res = runner.execute_step(
+        runner.execute_step(
             run_id=run_id,
             step_name="bind_and_reproduce_ch01_audio",
             step_kind="file_output",
@@ -111,7 +113,6 @@ def cmd_bind_ch01(policy: RootPolicy) -> int:
         inputs_file = policy.output_root_resolved / "inputs.json"
         inputs_data = json.loads(inputs_file.read_text(encoding="utf-8"))
 
-        # Record pinned approvals and artifacts in state.db
         cand_pin = CH01_PINNED_INPUTS["ch01_candidate_wav"]
         rev_pin = CH01_PINNED_INPUTS["ch01_edit_review_md"]
         store.record_approval(
@@ -272,7 +273,11 @@ def cmd_compile_ch01(policy: RootPolicy) -> int:
     return 0
 
 
-def cmd_assemble_ch01(policy: RootPolicy, scratch_project: str | None = None) -> int:
+def cmd_assemble_ch01(
+    policy: RootPolicy,
+    scratch_project: str | None = None,
+    skip_export: bool = False,
+) -> int:
     store, runner = _get_store_and_runner(policy)
     plan_file = policy.output_root_resolved / "timeline-plan.json"
     if not plan_file.is_file():
@@ -284,7 +289,10 @@ def cmd_assemble_ch01(policy: RootPolicy, scratch_project: str | None = None) ->
         if scratch_project
         else policy.output_root_resolved / "E02_CH01_Technical_Proof_v001.palmier"
     )
-    mp4_path = policy.output_root_resolved / "E02_CH01_Technical_Proof_v001.mp4"
+    mp4_path = policy.output_root_resolved / "E02_CH01_Technical_Proof_1080p30_v001.mp4"
+    mp4_alias_path = policy.output_root_resolved / "E02_CH01_Technical_Proof_v001.mp4"
+    reopen_receipt_path = policy.output_root_resolved / "reopen-verification.json"
+    export_receipt_path = policy.output_root_resolved / "export-receipt.json"
 
     adapter = PalmierAdapter(policy)
     with runner.acquire_run_lock(), runner.acquire_editor_writer_lock():
@@ -302,6 +310,7 @@ def cmd_assemble_ch01(policy: RootPolicy, scratch_project: str | None = None) ->
                 runner=runner,
                 run_id=run_id,
                 scratch_project_path=proj_path,
+                bootstrap_if_missing=True,
             )
             reopened = adapter.close_and_reopen(proj_path)
             reopen_diff = adapter.reconcile_plan(plan, reopened)
@@ -309,7 +318,47 @@ def cmd_assemble_ch01(policy: RootPolicy, scratch_project: str | None = None) ->
                 raise PalmierEditorError(
                     f"Reopened Palmier project state drifted from plan: {reopen_diff}"
                 )
-            export_res = adapter.export_video_mp4(mp4_path)
+
+            reopen_receipt = {
+                "verified_at": datetime.now(timezone.utc).isoformat(),
+                "project_path": str(proj_path),
+                "timeline_id": reopened.timeline_id,
+                "width": reopened.width,
+                "height": reopened.height,
+                "fps": reopened.fps,
+                "total_frames": reopened.total_frames,
+                "track_count": len(reopened.tracks),
+                "clip_count": sum(len(t.get("clips", [])) for t in reopened.tracks),
+                "marker_count": len(reopened.markers),
+                "reopen_reconciled_noop": True,
+            }
+            reopen_receipt_path.write_text(json.dumps(reopen_receipt, indent=2) + "\n", encoding="utf-8")
+
+            export_res: dict[str, Any] = {}
+            actual_mp4_path = str(mp4_path)
+            if not skip_export:
+                export_res = adapter.export_video_mp4(mp4_path)
+                actual_mp4_path = str(export_res.get("outputPath") or export_res.get("path") or mp4_path)
+                if Path(actual_mp4_path).is_file() and not mp4_alias_path.is_file():
+                    shutil.copy2(actual_mp4_path, mp4_alias_path)
+                export_receipt_path.write_text(json.dumps(export_res, indent=2) + "\n", encoding="utf-8")
+                store.record_artifact(
+                    episode_id="EPISODE_002",
+                    chapter_id="CH01",
+                    role="scratch:exported_mp4",
+                    path=actual_mp4_path,
+                    sha256=compute_sha256(actual_mp4_path),
+                    bytes_size=Path(actual_mp4_path).stat().st_size,
+                    metadata=export_res,
+                )
+
+            store.upsert_chapter(
+                episode_id="EPISODE_002",
+                chapter_id="CH01",
+                title="Welcome to the Color Garden",
+                palmier_project_path=str(proj_path),
+                status="assembled_and_exported" if not skip_export else "assembled",
+            )
             store.finish_run(run_id, status="succeeded")
         except ScratchProjectCreationBlockedError as exc:
             store.finish_run(run_id, status="blocked", error_message=str(exc))
@@ -331,8 +380,9 @@ def cmd_assemble_ch01(policy: RootPolicy, scratch_project: str | None = None) ->
                 "status": "ok",
                 "apply_result": apply_res,
                 "reopen_reconciled_noop": True,
+                "reopen_receipt_path": str(reopen_receipt_path),
                 "export_result": export_res,
-                "mp4_path": str(mp4_path),
+                "mp4_path": actual_mp4_path,
             },
             indent=2,
         )
@@ -340,14 +390,28 @@ def cmd_assemble_ch01(policy: RootPolicy, scratch_project: str | None = None) ->
     return 0
 
 
-def cmd_verify_ch01(policy: RootPolicy) -> int:
+def cmd_verify_prep_ch01(policy: RootPolicy) -> int:
+    """Verify offline M0 preparation only (inventory, audio PCM reproduction, registration, and scene plan)."""
     plan_file = policy.output_root_resolved / "timeline-plan.json"
     if not plan_file.is_file():
         cmd_compile_ch01(policy)
 
-    summary = generate_proof_report(policy)
+    summary = generate_proof_report(policy, require_editor_and_mp4=False)
     print(json.dumps(summary, indent=2))
-    if not summary["inventory_passed"] or not summary["motion_passed"] or not summary["audio_pcm_exact_match"]:
+    if not summary["prep_passed"]:
+        return 1
+    return 0
+
+
+def cmd_verify_ch01(policy: RootPolicy) -> int:
+    """Verify full M0 technical proof including native scratch .palmier reopen and MP4 decode/rendered frames."""
+    plan_file = policy.output_root_resolved / "timeline-plan.json"
+    if not plan_file.is_file():
+        cmd_compile_ch01(policy)
+
+    summary = generate_proof_report(policy, require_editor_and_mp4=True)
+    print(json.dumps(summary, indent=2))
+    if not summary["full_proof_passed"]:
         return 1
     return 0
 
@@ -355,7 +419,12 @@ def cmd_verify_ch01(policy: RootPolicy) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="mk-studio",
-        description="Mar & Kuku Production Studio M0 Technical Proof CLI",
+        description="Mar & Kuku Production Studio CLI",
+    )
+    parser.add_argument(
+        "--output-root",
+        default=None,
+        help="Optional override for scratch output root directory",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -371,10 +440,39 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Path to scratch .palmier project (defaults to scratch/ch01-proof/E02_CH01_Technical_Proof_v001.palmier)",
     )
-    sub.add_parser("verify-ch01", help="Verify production immutability, audio, motion, and generate proof-report.md")
+    p_assemble.add_argument(
+        "--skip-export",
+        action="store_true",
+        help="Apply plan and verify reopen without running video export",
+    )
+    sub.add_parser(
+        "verify-prep-ch01",
+        help="Verify offline preparation (inventory, audio PCM, registration, and scene plan)",
+    )
+    sub.add_parser(
+        "verify-ch01",
+        help="Verify full end-to-end M0 proof (fails unless native .palmier reopen and MP4 export pass)",
+    )
+    p_serve = sub.add_parser(
+        "serve",
+        help="Run the persistent local Mar & Kuku Production Studio web interface",
+    )
+    p_serve.add_argument("--host", default="127.0.0.1", help="Bind host (default 127.0.0.1)")
+    p_serve.add_argument("--port", type=int, default=8765, help="Bind port (default 8765)")
+
+    p_secret = sub.add_parser(
+        "set-secret",
+        help="Store a provider API secret in macOS Keychain (/usr/bin/security)",
+    )
+    p_secret.add_argument("provider_id", help="Provider ID (e.g. openai_api)")
+    p_secret.add_argument(
+        "--value",
+        default=None,
+        help="Secret value (if omitted, reads from stdin or interactive getpass prompt)",
+    )
 
     args = parser.parse_args(argv)
-    policy = RootPolicy()
+    policy = RootPolicy(output_root=Path(args.output_root)) if args.output_root else RootPolicy()
 
     if args.command == "doctor":
         return cmd_doctor(policy)
@@ -383,9 +481,38 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "compile-ch01":
         return cmd_compile_ch01(policy)
     if args.command == "assemble-ch01":
-        return cmd_assemble_ch01(policy, scratch_project=args.project)
+        return cmd_assemble_ch01(
+            policy,
+            scratch_project=args.project,
+            skip_export=bool(args.skip_export),
+        )
+    if args.command == "verify-prep-ch01":
+        return cmd_verify_prep_ch01(policy)
     if args.command == "verify-ch01":
         return cmd_verify_ch01(policy)
+    if args.command == "serve":
+        from mk_studio.studio.server import run_studio_server
+
+        run_studio_server(policy, host=args.host, port=args.port)
+        return 0
+    if args.command == "set-secret":
+        import getpass
+        from mk_studio.providers.registry import ProviderRegistry
+
+        store, _ = _get_store_and_runner(policy)
+        reg = ProviderRegistry(policy, store)
+        secret_val = args.value
+        if not secret_val:
+            if not sys.stdin.isatty():
+                secret_val = sys.stdin.read().strip()
+            else:
+                secret_val = getpass.getpass(f"Enter secret for {args.provider_id}: ").strip()
+        if not secret_val:
+            print(json.dumps({"status": "error", "message": "Empty secret value rejected"}))
+            return 2
+        res = reg.set_provider_secret(args.provider_id, secret_val)
+        print(json.dumps(res, indent=2))
+        return 0
     return 1
 
 

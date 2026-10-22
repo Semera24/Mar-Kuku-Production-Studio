@@ -96,3 +96,4 @@ cd /Users/yonassayfu/Projects/mar-kuku-production-studio
 | `scratch/ch01-proof/chapter-spec.json` | `12,101` | Episode-neutral `ChapterSpec` for CH01 (`907` frames @ `30 fps`, 13 pose spans, 1 prop span, 10 cues) |
 | `scratch/ch01-proof/timeline-plan.json` | `236,973` | Compiled `TimelinePlan` (`plan_id: EPISODE_002_CH01_7bea24c1641b3fbb`) with top-left position & normalized scale keyframes |
 | `scratch/ch01-proof/proof-report.md` | `4,916` | Complete technical verification report |
+
