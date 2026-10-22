@@ -1206,57 +1206,98 @@ class BrowserController:
             if attached_file_str:
                 try:
                     ws.call("DOM.enable")
-                    ws.call("Page.setInterceptFileChooserDialog", {"enabled": True})
+                    # Step 1: Install click interceptor so dynamic file input is attached to DOM
+                    ws.call(
+                        "Runtime.evaluate",
+                        {
+                            "expression": """
+                            (() => {
+                                window.__manus_captured_file_input = null;
+                                const origClick = HTMLInputElement.prototype.click;
+                                HTMLInputElement.prototype.click = function() {
+                                    if (this.type === 'file') {
+                                        this.id = '__manus_file_input__';
+                                        document.body.appendChild(this);
+                                        window.__manus_captured_file_input = this;
+                                        return;
+                                    }
+                                    return origClick.apply(this, arguments);
+                                };
+                                return true;
+                            })()
+                            """
+                        },
+                    )
 
-                    # Check direct file input first
+                    # Step 2: Open attachment menu via plus button
+                    ws.call(
+                        "Runtime.evaluate",
+                        {
+                            "expression": """
+                            (() => {
+                                const btn = document.querySelector("button:has(svg.lucide-plus), button:has(svg.lucide-paperclip)");
+                                if (btn) {
+                                    btn.dispatchEvent(new PointerEvent("pointerdown", {bubbles: true}));
+                                    btn.dispatchEvent(new MouseEvent("mousedown", {bubbles: true}));
+                                    btn.click();
+                                    return true;
+                                }
+                                return false;
+                            })()
+                            """
+                        },
+                    )
+                    time.sleep(0.5)
+
+                    # Step 3: Click 'Local files'
+                    ws.call(
+                        "Runtime.evaluate",
+                        {
+                            "expression": """
+                            (() => {
+                                const localEl = Array.from(document.querySelectorAll("*")).find(el => el.innerText && el.innerText.trim() === "Local files" && el.children.length === 0);
+                                if (localEl) {
+                                    localEl.dispatchEvent(new PointerEvent("pointerdown", {bubbles: true}));
+                                    localEl.dispatchEvent(new MouseEvent("mousedown", {bubbles: true}));
+                                    localEl.click();
+                                    return true;
+                                }
+                                return false;
+                            })()
+                            """
+                        },
+                    )
+                    time.sleep(0.5)
+
+                    # Step 4: Set file input files via CDP DOM
                     doc = ws.call("DOM.getDocument", {"depth": -1})
                     root_node_id = int((doc.get("root") or {}).get("nodeId") or 1)
                     q_res = ws.call(
                         "DOM.querySelector",
-                        {"nodeId": root_node_id, "selector": "input[type='file']"},
+                        {"nodeId": root_node_id, "selector": "#__manus_file_input__, input[type='file']"},
                     )
                     file_node_id = int(q_res.get("nodeId") or 0)
                     if file_node_id > 0:
                         ws.call("DOM.setFileInputFiles", {"nodeId": file_node_id, "files": [attached_file_str]})
                         file_attached = True
-                    else:
-                        # Open attachment menu via plus button and click Local files
-                        ws.call(
-                            "Runtime.evaluate",
-                            {
-                                "expression": """
-                                (() => {
-                                    const btn = document.querySelector("button:has(svg.lucide-plus)");
-                                    if (btn) btn.click();
-                                    return true;
-                                })()
-                                """
-                            },
-                        )
-                        time.sleep(0.5)
-                        ws.call(
-                            "Runtime.evaluate",
-                            {
-                                "expression": """
-                                (() => {
-                                    const localEl = Array.from(document.querySelectorAll("*")).find(el => el.innerText.trim() === "Local files" && el.children.length === 0);
-                                    if (localEl) localEl.click();
-                                    return true;
-                                })()
-                                """
-                            },
-                        )
-                        time.sleep(0.5)
 
-                        # Check intercepted fileChooserOpened event
-                        evt = next((e for e in ws.received_events if e.get("method") == "Page.fileChooserOpened"), None)
-                        if evt:
-                            backend_id = evt.get("params", {}).get("backendNodeId")
-                            if backend_id:
-                                ws.call("DOM.setFileInputFiles", {"backendNodeId": int(backend_id), "files": [attached_file_str]})
-                                file_attached = True
-
-                    time.sleep(1.0)
+                        # Step 5: Wait for upload to complete
+                        for _ in range(35):
+                            time.sleep(1.0)
+                            up_res = ws.call(
+                                "Runtime.evaluate",
+                                {
+                                    "expression": """
+                                    (() => {
+                                        const body = document.body ? document.body.innerText : '';
+                                        return !body.includes('Uploading');
+                                    })()
+                                    """,
+                                    "returnByValue": True,
+                                },
+                            )
+                            if (up_res.get("result") or {}).get("value") is True:
+                                break
                 except Exception:
                     pass
 
@@ -1306,6 +1347,14 @@ class BrowserController:
                     {
                         "expression": """
                         (() => {
+                            const buttons = Array.from(document.querySelectorAll('button'));
+                            const sendBtn = buttons.find(b => b.className.includes('accent-send-button') || (b.type === 'submit' && !b.innerText.includes('Upgrade') && b.querySelector('svg')));
+                            if (sendBtn && !sendBtn.disabled) {
+                                sendBtn.dispatchEvent(new PointerEvent('pointerdown', {bubbles: true}));
+                                sendBtn.dispatchEvent(new MouseEvent('mousedown', {bubbles: true}));
+                                sendBtn.click();
+                                return 'clicked_button';
+                            }
                             const pm = document.querySelector('.ProseMirror, [contenteditable="true"], textarea');
                             if (pm) {
                                 pm.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true}));
@@ -1351,6 +1400,11 @@ class BrowserController:
                                 if (rateIdx !== -1) sub = sub.slice(0, rateIdx);
                                 extracted = sub.trim();
                             }
+                            // Also check preview view lines
+                            const viewLines = Array.from(document.querySelectorAll('.view-line')).map(l => l.innerText).filter(Boolean);
+                            if (viewLines.length > 0) {
+                                extracted = viewLines.join('\\n');
+                            }
                             return JSON.stringify({
                                 url: window.location.href,
                                 needsLogin: needsLogin,
@@ -1371,7 +1425,7 @@ class BrowserController:
                         "and displayed 'Welcome to Manus — Your message is saved and will be sent after you sign in.'"
                     )
                     break
-                if int(p_data.get("completedCount") or 0) > before_completed and p_data.get("extracted"):
+                if (int(p_data.get("completedCount") or 0) > before_completed or 'Task completed' in p_data.get('bodyExcerpt', '')) and p_data.get("extracted"):
                     final_text = str(p_data["extracted"]).strip()
                     break
 
