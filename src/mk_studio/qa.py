@@ -323,6 +323,11 @@ def verify_exported_mp4(
 def verify_native_palmier_project(
     palmier_proj_path: Path,
     reopen_receipt_path: Path | None = None,
+    *,
+    min_tracks: int = 1,
+    min_clips: int = 1,
+    min_markers: int = 0,
+    require_reopen: bool = False,
 ) -> dict[str, Any]:
     """Verify that the native .palmier package exists on disk, contains a populated project.json, and passed close/reopen reconciliation."""
     exists = palmier_proj_path.is_dir() and (palmier_proj_path / "project.json").is_file()
@@ -347,7 +352,7 @@ def verify_native_palmier_project(
     tracks = tl.get("tracks") or []
     clips_on_disk = sum(len(t.get("clips") or []) for t in tracks if isinstance(t, dict))
     markers_on_disk = len(tl.get("markers") or [])
-    structure_valid = len(tracks) >= 5 and clips_on_disk >= 16 and markers_on_disk >= 10
+    structure_valid = len(tracks) >= min_tracks and clips_on_disk >= min_clips and markers_on_disk >= min_markers
 
     reopen_verified = False
     reopen_details: dict[str, Any] = {}
@@ -355,9 +360,11 @@ def verify_native_palmier_project(
         reopen_details = json.loads(reopen_receipt_path.read_text(encoding="utf-8"))
         reopen_verified = bool(reopen_details.get("reopen_reconciled_noop") is True)
 
+    passed = bool(exists and structure_valid and (reopen_verified if require_reopen else True))
+
     return {
         "exists": True,
-        "passed": bool(exists and structure_valid and reopen_verified),
+        "passed": passed,
         "path": str(palmier_proj_path),
         "project_json_sha256": proj_sha,
         "structure_valid": structure_valid,
@@ -418,7 +425,14 @@ def generate_proof_report(
         and bool(fresh_audio_repro.get("exact_sample_count_match"))
     )
 
-    palmier_qa = verify_native_palmier_project(palmier_proj_path, reopen_receipt_path)
+    palmier_qa = verify_native_palmier_project(
+        palmier_proj_path,
+        reopen_receipt_path,
+        min_tracks=5,
+        min_clips=16,
+        min_markers=10,
+        require_reopen=True,
+    )
     mp4_qa = verify_exported_mp4(mp4_path)
 
     store = StateStore(db_path)

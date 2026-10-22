@@ -282,7 +282,8 @@ class StudioWorkflowEngine:
         s6 = m['steps'].setdefault('step_6_asset_generation_and_intake', {'status': 'pending', 'submission_count': 0})
         self._check_stop(m, episode_id, 'before_step_6')
         folder = self.get_episode_folder(episode_id)
-        res = generate_episode_assets(episode_id, folder, self.policy, self.store)
+        script_file = m.get('current_script_path')
+        res = generate_episode_assets(episode_id, folder, self.policy, self.store, script_path=script_file)
         out_json = folder / "06_asset_intake_manifest.json"
         s6.update(status='completed', output_file=str(out_json), output_sha256=compute_sha256(out_json),
                   submission_count=int(s6.get('submission_count', 0)) + 1, completed_at=_utc_now())

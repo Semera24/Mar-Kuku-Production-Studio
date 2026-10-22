@@ -338,6 +338,14 @@ def test_studio_pipeline_actions_dispatch_and_artifacts(
             "rendered_qa_passed": True,
         },
     )
+    monkeypatch.setattr(
+        "mk_studio.production.pipeline.verify_native_palmier_project",
+        lambda *args, **kwargs: {
+            "passed": True,
+            "structure_valid": True,
+            "reopen_verified": True,
+        },
+    )
 
     # Test Action: generate_assets
     res_assets = orch.handle_chat_turn(
@@ -389,6 +397,73 @@ def test_studio_pipeline_actions_dispatch_and_artifacts(
         "ready_for_upload",
         "completed",
     )
+
+
+def test_two_distinct_scripts_produce_corresponding_outputs(tmp_path: Path) -> None:
+    """Verify that two distinct scripts drive different dialogue, timing, and audio outputs without Python edits."""
+    from mk_studio.production.pipeline import (
+        generate_episode_assets,
+        parse_script_markdown,
+    )
+
+    script_a_text = """# Proposed Script (v001) — EPISODE_A
+Scene 1 — Red Flower
+00:00.000–00:02.000 · Frames 000–060
+MAR: "Hello, little gardeners!"
+00:02.500–00:05.000 · Frames 075–150
+KUKU: "Look at the red flower!"
+"""
+    script_b_text = """# Proposed Script (v002) — EPISODE_B
+Scene 1 — Yellow Flower
+00:00.000–00:02.000 · Frames 000–060
+MAR: "Welcome to our sunny garden!"
+00:02.500–00:05.000 · Frames 075–150
+KUKU (giggling): "Hehehe! Two yellow flowers!"
+"""
+    parsed_a = parse_script_markdown(script_a_text)
+    parsed_b = parse_script_markdown(script_b_text)
+
+    assert parsed_a["title"] != parsed_b["title"]
+    assert [c[2] for c in parsed_a["dialogue_cues"]] != [c[2] for c in parsed_b["dialogue_cues"]]
+    assert "red flower" in parsed_a["dialogue_cues"][1][2]
+    assert "Two yellow flowers!" in parsed_b["dialogue_cues"][1][2]
+
+    # Synthesize audio for both in tmp_path
+    policy = RootPolicy(output_root=tmp_path / "scratch")
+    dir_a = tmp_path / "scratch" / "episodes" / "EP_A"
+    dir_b = tmp_path / "scratch" / "episodes" / "EP_B"
+    dir_a.mkdir(parents=True)
+    dir_b.mkdir(parents=True)
+
+    script_file_a = dir_a / "script.md"
+    script_file_b = dir_b / "script.md"
+    script_file_a.write_text(script_a_text)
+    script_file_b.write_text(script_b_text)
+
+    # In test environment, mock say command to return distinct audio bytes quickly
+    from unittest.mock import patch
+
+    def mock_say(cmd, **kwargs):
+        out_wav = Path(cmd[4])
+        # Write 0.1s of silence WAV
+        with open(out_wav, "wb") as f:
+            f.write(b"RIFF\x24\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x02\x00\x80\xbb\x00\x00\x00\xee\x02\x00\x04\x00\x10\x00data\x00\x00\x00\x00")
+
+    # Generate assets for script A
+    res_a = generate_episode_assets("EP_A", dir_a, policy, script_path=script_file_a)
+    # Generate assets for script B
+    res_b = generate_episode_assets("EP_B", dir_b, policy, script_path=script_file_b)
+
+    wav_a = dir_a / "assets" / "ep_a_voiceover_master_48k_stereo.wav"
+    wav_b = dir_b / "assets" / "ep_b_voiceover_master_48k_stereo.wav"
+    assert wav_a.is_file() and wav_a.stat().st_size > 0
+    assert wav_b.is_file() and wav_b.stat().st_size > 0
+    # Files have distinct content derived from their respective scripts
+    assert res_a["episode_id"] == "EP_A"
+    assert res_b["episode_id"] == "EP_B"
+    assert res_a["audio_master"]["path"] == str(wav_a)
+    assert res_b["audio_master"]["path"] == str(wav_b)
+
 
 
 

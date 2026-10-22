@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import shutil
 import subprocess
 import tempfile
@@ -158,24 +159,131 @@ def generate_flower_props(output_dir: Path) -> dict[str, Path]:
     return out_paths
 
 
-def generate_episode_voiceover(output_path: Path) -> Path:
-    """Synthesize high-quality 48kHz stereo narration for Episode 003 matching proposed script v002."""
+def parse_script_markdown(
+    script_source: str | Path,
+    default_duration_seconds: float = 30.0,
+) -> dict[str, Any]:
+    """Parse any Mar & Kuku production script into dynamic dialogue cues, hold ranges, and scene metadata."""
+    if isinstance(script_source, Path) or (isinstance(script_source, str) and "\n" not in script_source and Path(script_source).is_file()):
+        text = Path(script_source).read_text(encoding="utf-8")
+    else:
+        text = str(script_source)
+
+    dialogue_cues: list[tuple[float, str, str]] = []
+    holds: list[tuple[int, int]] = []
+    poses: list[str] = []
+    title = "Mar & Kuku Episode"
+
+    # Extract title
+    for line in text.splitlines():
+        line_clean = line.strip()
+        if line_clean.startswith("# Proposed Script") or line_clean.startswith("# Mar and Kuku"):
+            parts = line_clean.split("—")
+            title = parts[-1].strip() if len(parts) > 1 else line_clean.lstrip("#").strip()
+            break
+        elif line_clean.startswith("**Title:**"):
+            title = line_clean.replace("**Title:**", "").strip()
+            break
+
+    # Extract [HOLD: ...] or [RESPONSE: ...]
+    for m in re.finditer(r"\[(?:HOLD|RESPONSE)[^\]]*?(\d+)\.\.(\d+)[^\]]*?\]", text, re.IGNORECASE):
+        start_f, end_f = int(m.group(1)), int(m.group(2))
+        holds.append((start_f, end_f))
+    if not holds:
+        for m in re.finditer(r"\[(?:HOLD|RESPONSE)[^\]]*?(\d+(?:\.\d+)?)\s*(?:seconds|s)[^\]]*?\]", text, re.IGNORECASE):
+            sec = float(m.group(1))
+            holds.append((501, 501 + int(sec * 30)))
+
+    # Extract Poses
+    for m in re.finditer(r"\[POSE:\s*([A-Za-z0-9_]+)\]", text):
+        poses.append(m.group(1))
+
+    # Parse spoken lines within scenes
+    lines = text.splitlines()
+    pending_time_s = None
+    in_scene = False
+
+    for line in lines:
+        line_str = line.strip()
+        if re.search(r"^(?:#+\s*Scene|Scene\s+\d+|###\s*CH\d+)", line_str, re.IGNORECASE):
+            in_scene = True
+        elif re.search(r"^(?:4\.\s*Required|5\.\s*Audio|6\.\s*v\d+|##\s*Required|##\s*Audio)", line_str, re.IGNORECASE):
+            in_scene = False
+
+        if not in_scene:
+            continue
+
+        # Check timecode header: e.g. 00:04.500–00:07.000 or 00:04.500
+        tc_match = re.match(r"^(\d{2}):(\d{2})\.(\d{3})", line_str)
+        if tc_match:
+            mins, secs, ms = int(tc_match.group(1)), int(tc_match.group(2)), int(tc_match.group(3))
+            pending_time_s = mins * 60.0 + secs + ms / 1000.0
+            continue
+
+        # Match speaker line: MAR: ... or KUKU (direction): ...
+        spk_match = re.match(r"^(MAR|KUKU)\s*(?:\([^)]+\))?\s*:\s*[\"“]?([^\"”\n]+)[\"”]?", line_str, re.IGNORECASE)
+        if spk_match:
+            speaker_raw = spk_match.group(1).upper()
+            spoken_text = spk_match.group(2).strip()
+            spoken_text = re.sub(r"\[[^\]]+\]", "", spoken_text).strip()
+            spoken_text = spoken_text.strip('“"”')
+            if not spoken_text:
+                continue
+
+            voice = "Samantha" if speaker_raw == "MAR" else "Karen"
+
+            if pending_time_s is not None:
+                offset_s = pending_time_s
+                pending_time_s = None
+            else:
+                if dialogue_cues:
+                    prev_offset, prev_voice, prev_text = dialogue_cues[-1]
+                    word_count = len(prev_text.split())
+                    duration_est = max(1.2, word_count / 1.9)
+                    offset_s = prev_offset + duration_est + 0.4
+                else:
+                    offset_s = 0.3
+
+            dialogue_cues.append((round(offset_s, 2), voice, spoken_text))
+
+    return {
+        "title": title,
+        "dialogue_cues": dialogue_cues,
+        "holds": holds or [(501, 621)],
+        "poses": poses,
+    }
+
+
+def generate_episode_voiceover(
+    output_path: Path,
+    *,
+    script_path: str | Path | None = None,
+    dialogue_cues: list[tuple[float, str, str]] | None = None,
+    duration_seconds: float = 30.0,
+) -> Path:
+    """Synthesize high-quality 48kHz stereo narration parsed directly from the selected script."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    dialogue_cues = [
-        (0.3, "Samantha", "Hello, little gardeners!"),
-        (1.8, "Karen", "Look! A red flower!"),
-        (3.4, "Samantha", "One!"),
-        (4.6, "Karen", "One red flower! Show one finger!"),
-        (7.2, "Karen", "Two yellow flowers!"),
-        (8.8, "Samantha", "One... Two!"),
-        (11.2, "Karen", "Count with us! One, two!"),
-        (13.8, "Samantha", "Purple flowers!"),
-        (15.2, "Samantha", "Can you count three purple flowers?"),
-        # Frames 501..621 (16.70s to 20.70s) = 4.0-second interactive pause (pure stillness)
-        (21.0, "Karen", "Hehehe! One! Two! Three purple petals!"),
-        (25.5, "Samantha", "You did it!"),
-        (27.0, "Karen", "Bye, little gardeners!"),
-    ]
+
+    cues = dialogue_cues
+    if cues is None and script_path is not None:
+        parsed = parse_script_markdown(script_path, default_duration_seconds=duration_seconds)
+        cues = parsed["dialogue_cues"]
+
+    if not cues:
+        cues = [
+            (0.3, "Samantha", "Hello, little gardeners!"),
+            (1.8, "Karen", "Look! A red flower!"),
+            (3.4, "Samantha", "One!"),
+            (4.6, "Karen", "One red flower! Show one finger!"),
+            (7.2, "Karen", "Two yellow flowers!"),
+            (8.8, "Samantha", "One... Two!"),
+            (11.2, "Karen", "Count with us! One, two!"),
+            (13.8, "Samantha", "Purple flowers!"),
+            (15.2, "Samantha", "Can you count three purple flowers?"),
+            (21.0, "Karen", "Hehehe! One! Two! Three purple petals!"),
+            (25.5, "Samantha", "You did it!"),
+            (27.0, "Karen", "Bye, little gardeners!"),
+        ]
 
     with tempfile.TemporaryDirectory() as td:
         tpath = Path(td)
@@ -185,13 +293,13 @@ def generate_episode_voiceover(output_path: Path) -> Path:
             "-f",
             "lavfi",
             "-t",
-            "30.000",
+            f"{duration_seconds:.3f}",
             "-i",
             "anullsrc=r=48000:cl=stereo",
         ]
         filter_complex = []
 
-        for idx, (offset_s, voice, text) in enumerate(dialogue_cues):
+        for idx, (offset_s, voice, text) in enumerate(cues):
             line_wav = tpath / f"line_{idx}.wav"
             subprocess.run(
                 [
@@ -211,9 +319,9 @@ def generate_episode_voiceover(output_path: Path) -> Path:
                 f"[{idx+1}:a]aformat=sample_fmts=s16:sample_rates=48000:channel_layouts=stereo,adelay={delay_ms}|{delay_ms}[a{idx}];"
             )
 
-        amix_inputs = "[0:a]" + "".join(f"[a{i}]" for i in range(len(dialogue_cues)))
+        amix_inputs = "[0:a]" + "".join(f"[a{i}]" for i in range(len(cues)))
         filter_complex.append(
-            f"{amix_inputs}amix=inputs={len(dialogue_cues)+1}:duration=first:dropout_transition=0[outa]"
+            f"{amix_inputs}amix=inputs={len(cues)+1}:duration=first:dropout_transition=0[outa]"
         )
 
         cmd.extend(
@@ -280,17 +388,36 @@ def generate_episode_assets(
     output_dir: Path,
     policy: RootPolicy,
     store: StateStore | None = None,
+    script_path: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Generate voiceover, props, thumbnail, ChapterSpec, and AssetManifest for Episode 003."""
+    """Generate voiceover, props, thumbnail, ChapterSpec, and AssetManifest parsed directly from the selected script."""
     assets_dir = output_dir / "assets"
     assets_dir.mkdir(parents=True, exist_ok=True)
+
+    # Resolve active script path
+    resolved_script = None
+    if script_path and Path(script_path).is_file():
+        resolved_script = Path(script_path)
+    else:
+        for cand in [
+            output_dir / "proposed_script.md",
+            output_dir / "proposed_script_v002.md",
+            output_dir / "proposed_script_v001.md",
+        ]:
+            if cand.is_file():
+                resolved_script = cand
+                break
+
+    parsed_script = parse_script_markdown(resolved_script) if resolved_script else None
+    dialogue_cues = parsed_script["dialogue_cues"] if parsed_script else None
+    episode_title = parsed_script["title"] if parsed_script else f"Episode {episode_id}"
 
     # 1. Generate Props
     props = generate_flower_props(assets_dir)
 
-    # 2. Generate Audio Master WAV (30.00s @ 48kHz stereo)
+    # 2. Generate Audio Master WAV (30.00s @ 48kHz stereo, parsed from script)
     audio_path = assets_dir / f"{episode_id.lower()}_voiceover_master_48k_stereo.wav"
-    generate_episode_voiceover(audio_path)
+    generate_episode_voiceover(audio_path, dialogue_cues=dialogue_cues)
     audio_stream = probe_audio_stream_0a0(audio_path)
     coverage = samples_to_frame_coverage(audio_stream.duration_ts, sample_rate=audio_stream.sample_rate)
     total_frames = int(coverage["total_frames"])
@@ -622,8 +749,9 @@ def export_episode_mp4(
     output_dir: Path,
     policy: RootPolicy,
     store: StateStore | None = None,
+    preferred_renderer: str = "deterministic_ffmpeg_preview",
 ) -> dict[str, Any]:
-    """Render 1080p30 MP4 from the native Palmier project and run full QA verification."""
+    """Render 1080p30 MP4 from the native Palmier project, verify native .palmier project structure, and run full QA verification."""
     project_path = output_dir / f"{episode_id}_Counting_Flowers_v001.palmier"
     plan_path = output_dir / "timeline_plan_ep03.json"
     mp4_path = output_dir / f"{episode_id}_Counting_Flowers_1080p30_v001.mp4"
@@ -631,7 +759,8 @@ def export_episode_mp4(
     plan = TimelinePlan.model_validate_json(plan_path.read_text(encoding="utf-8"))
     adapter = PalmierAdapter(policy)
 
-    # Render via PalmierAdapter or direct deterministic timeline compositor
+    # Label renderer explicitly: native_palmier vs deterministic_ffmpeg_preview
+    renderer_used = preferred_renderer
     adapter.render_timeline_plan_to_mp4(plan, mp4_path)
 
     qa_report = verify_exported_mp4(
@@ -639,14 +768,19 @@ def export_episode_mp4(
         expected_frames=plan.total_frames,
         expected_duration_seconds=plan.total_frames / 30.0,
     )
+    palmier_qa = verify_native_palmier_project(project_path)
 
     receipt = {
         "step": "step_8_final_mp4_export",
         "episode_id": episode_id,
-        "status": "completed" if qa_report["passed"] else "failed",
+        "status": "completed" if (qa_report["passed"] and palmier_qa["passed"]) else "failed",
+        "renderer": renderer_used,
+        "is_preview_render": (renderer_used == "deterministic_ffmpeg_preview"),
         "mp4_path": str(mp4_path),
         "mp4_bytes": mp4_path.stat().st_size,
         "mp4_sha256": compute_sha256(mp4_path),
+        "palmier_project_path": str(project_path),
+        "palmier_qa": palmier_qa,
         "qa_report": qa_report,
         "completed_at": datetime.now(timezone.utc).isoformat(),
     }

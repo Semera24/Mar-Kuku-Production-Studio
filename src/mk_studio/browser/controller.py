@@ -1016,9 +1016,9 @@ class BrowserController:
                 {
                     "expression": """
                     (() => {
-                        const bodyText = document.body ? document.body.innerText : '';
-                        const parts = bodyText.split('Gemini said');
-                        return JSON.stringify({saidCount: Math.max(0, parts.length - 1)});
+                        const models = Array.from(document.querySelectorAll("model-response"));
+                        const count = models.length || Math.max(0, (document.body ? document.body.innerText : "").split('Gemini said').length - 1);
+                        return JSON.stringify({saidCount: count});
                     })()
                     """,
                     "returnByValue": True,
@@ -1093,26 +1093,35 @@ class BrowserController:
                     {
                         "expression": """
                         (() => {
-                            const bodyText = document.body ? document.body.innerText : '';
-                            const parts = bodyText.split('Gemini said');
-                            let saidText = '';
-                            if (parts.length > 1) {
-                                let raw = parts[parts.length - 1];
-                                const cutMarkers = [
-                                    'Sign in to connect to Google apps',
-                                    'Gemini is AI and can make mistakes',
-                                    'About Gemini',
-                                    'Flash-Lite'
-                                ];
-                                for (const m of cutMarkers) {
-                                    const idx = raw.indexOf(m);
-                                    if (idx !== -1) raw = raw.slice(0, idx);
+                            const models = Array.from(document.querySelectorAll("model-response"));
+                            const saidCount = models.length;
+                            let saidText = "";
+                            if (models.length > 0) {
+                                const last = models[models.length - 1];
+                                const content = last.querySelector("message-content") || last.querySelector(".model-response-text") || last;
+                                saidText = (content ? content.innerText : "").trim();
+                            }
+                            if (!saidText) {
+                                const bodyText = document.body ? document.body.innerText : '';
+                                const parts = bodyText.split('Gemini said');
+                                if (parts.length > 1) {
+                                    let raw = parts[parts.length - 1];
+                                    const cutMarkers = [
+                                        'Sign in to connect to Google apps',
+                                        'Gemini is AI and can make mistakes',
+                                        'About Gemini',
+                                        'Flash-Lite'
+                                    ];
+                                    for (const m of cutMarkers) {
+                                        const idx = raw.indexOf(m);
+                                        if (idx !== -1) raw = raw.slice(0, idx);
+                                    }
+                                    saidText = raw.trim();
                                 }
-                                saidText = raw.trim();
                             }
                             return JSON.stringify({
                                 url: window.location.href,
-                                saidCount: Math.max(0, parts.length - 1),
+                                saidCount: saidCount || Math.max(0, (document.body ? document.body.innerText : '').split('Gemini said').length - 1),
                                 saidText: saidText
                             });
                         })()

@@ -59,3 +59,4 @@
 - Branch `main` has all commits merged.
 - Git remote `origin` configured to `https://github.com/Semera24/Mar-Kuku-Production-Studio.git`.
 - *Note on GitHub PAT:* Fine-grained token `github_pat_11BV5AYGY0...` requires repository permission **"Contents: Read and write"** enabled on GitHub to complete `git push origin main`.
+
