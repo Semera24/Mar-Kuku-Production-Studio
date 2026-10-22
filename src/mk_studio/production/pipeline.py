@@ -202,6 +202,9 @@ def parse_script_markdown(
     lines = text.splitlines()
     pending_time_s = None
     in_scene = False
+    in_post_hold = False
+    hold_start_s = holds[0][0] / 30.0 if holds else 16.70
+    hold_end_s = holds[0][1] / 30.0 if holds else 20.70
 
     for line in lines:
         line_str = line.strip()
@@ -213,11 +216,24 @@ def parse_script_markdown(
         if not in_scene:
             continue
 
+        if "after the hold" in line_str.lower():
+            in_post_hold = True
+            pending_time_s = round(hold_end_s + 0.1, 2)
+            continue
+
+        if "[hold" in line_str.lower() or "requested hold cue" in line_str.lower():
+            pending_time_s = None
+            continue
+
         # Check timecode header: e.g. 00:04.500–00:07.000 or 00:04.500
         tc_match = re.match(r"^(\d{2}):(\d{2})\.(\d{3})", line_str)
         if tc_match:
             mins, secs, ms = int(tc_match.group(1)), int(tc_match.group(2)), int(tc_match.group(3))
-            pending_time_s = mins * 60.0 + secs + ms / 1000.0
+            t_s = mins * 60.0 + secs + ms / 1000.0
+            if not in_post_hold and hold_start_s <= t_s < hold_end_s:
+                pending_time_s = None
+            else:
+                pending_time_s = t_s
             continue
 
         # Match speaker line: MAR: ... or KUKU (direction): ...
@@ -225,6 +241,7 @@ def parse_script_markdown(
         if spk_match:
             speaker_raw = spk_match.group(1).upper()
             spoken_text = spk_match.group(2).strip()
+            # Clean spoken text of any inline brackets or quotes
             spoken_text = re.sub(r"\[[^\]]+\]", "", spoken_text).strip()
             spoken_text = spoken_text.strip('“"”')
             if not spoken_text:
@@ -232,7 +249,18 @@ def parse_script_markdown(
 
             voice = "Samantha" if speaker_raw == "MAR" else "Karen"
 
-            if pending_time_s is not None:
+            if in_post_hold:
+                if pending_time_s is not None and pending_time_s >= hold_end_s:
+                    offset_s = pending_time_s
+                    pending_time_s = None
+                elif dialogue_cues and dialogue_cues[-1][0] >= hold_end_s:
+                    prev_offset, prev_voice, prev_text = dialogue_cues[-1]
+                    word_count = len(prev_text.split())
+                    duration_est = max(1.2, word_count / 1.9)
+                    offset_s = round(prev_offset + duration_est + 0.4, 2)
+                else:
+                    offset_s = round(hold_end_s + 0.1, 2)
+            elif pending_time_s is not None:
                 offset_s = pending_time_s
                 pending_time_s = None
             else:
@@ -240,9 +268,13 @@ def parse_script_markdown(
                     prev_offset, prev_voice, prev_text = dialogue_cues[-1]
                     word_count = len(prev_text.split())
                     duration_est = max(1.2, word_count / 1.9)
-                    offset_s = prev_offset + duration_est + 0.4
+                    offset_s = round(prev_offset + duration_est + 0.4, 2)
                 else:
-                    offset_s = 0.3
+                    offset_s = 0.2
+
+            # Reject any dialogue that collides with the silent hold window
+            if hold_start_s <= offset_s < hold_end_s:
+                continue
 
             dialogue_cues.append((round(offset_s, 2), voice, spoken_text))
 
@@ -299,6 +331,9 @@ def generate_episode_voiceover(
         ]
         filter_complex = []
 
+        current_time = 0.0
+        h_start, h_end = 16.70, 20.70
+
         for idx, (offset_s, voice, text) in enumerate(cues):
             line_wav = tpath / f"line_{idx}.wav"
             subprocess.run(
@@ -313,8 +348,29 @@ def generate_episode_voiceover(
                 ],
                 check=True,
             )
+            dur = probe_audio_stream_0a0(line_wav).duration_seconds
+
+            # Auto-align start time to prevent speech collision
+            start_s = max(offset_s, current_time)
+            if offset_s >= h_end:
+                start_s = max(start_s, h_end + 0.1)
+
+            end_s = start_s + dur
+            # Prevent speech clipping into silent hold window
+            if start_s < h_start and end_s > h_start:
+                shift = round(end_s - h_start + 0.05, 2)
+                start_s = round(start_s - shift, 2)
+                end_s = start_s + dur
+
+            if not (start_s >= h_end or end_s <= h_start):
+                raise ValueError(
+                    f"Dialogue line {idx+1} ('{text}') clips into silent hold window "
+                    f"[{h_start:.2f}s..{h_end:.2f}s]: calculated span [{start_s:.2f}s..{end_s:.2f}s]"
+                )
+
+            current_time = round(end_s + 0.25, 2)
             cmd.extend(["-i", str(line_wav)])
-            delay_ms = int(offset_s * 1000)
+            delay_ms = int(start_s * 1000)
             filter_complex.append(
                 f"[{idx+1}:a]aformat=sample_fmts=s16:sample_rates=48000:channel_layouts=stereo,adelay={delay_ms}|{delay_ms}[a{idx}];"
             )
@@ -750,6 +806,7 @@ def export_episode_mp4(
     policy: RootPolicy,
     store: StateStore | None = None,
     preferred_renderer: str = "deterministic_ffmpeg_preview",
+    allow_preview_fallback: bool = True,
 ) -> dict[str, Any]:
     """Render 1080p30 MP4 from the native Palmier project, verify native .palmier project structure, and run full QA verification."""
     project_path = output_dir / f"{episode_id}_Counting_Flowers_v001.palmier"
@@ -759,9 +816,28 @@ def export_episode_mp4(
     plan = TimelinePlan.model_validate_json(plan_path.read_text(encoding="utf-8"))
     adapter = PalmierAdapter(policy)
 
-    # Label renderer explicitly: native_palmier vs deterministic_ffmpeg_preview
     renderer_used = preferred_renderer
-    adapter.render_timeline_plan_to_mp4(plan, mp4_path)
+    palmier_export_attempted = False
+    palmier_error = None
+    native_export_receipt = None
+
+    if preferred_renderer == "native_palmier":
+        palmier_export_attempted = True
+        try:
+            native_export_receipt = adapter.export_video_mp4(mp4_path)
+            renderer_used = "native_palmier"
+        except Exception as exc:
+            palmier_error = str(exc)
+            if allow_preview_fallback:
+                renderer_used = "deterministic_ffmpeg_preview"
+                adapter.render_timeline_plan_to_mp4(plan, mp4_path)
+            else:
+                raise
+    elif preferred_renderer == "deterministic_ffmpeg_preview":
+        renderer_used = "deterministic_ffmpeg_preview"
+        adapter.render_timeline_plan_to_mp4(plan, mp4_path)
+    else:
+        raise ValueError(f"Unknown preferred_renderer: {preferred_renderer}")
 
     qa_report = verify_exported_mp4(
         mp4_path,
@@ -776,6 +852,9 @@ def export_episode_mp4(
         "status": "completed" if (qa_report["passed"] and palmier_qa["passed"]) else "failed",
         "renderer": renderer_used,
         "is_preview_render": (renderer_used == "deterministic_ffmpeg_preview"),
+        "native_palmier_attempted": palmier_export_attempted,
+        "native_palmier_error": palmier_error,
+        "native_export_receipt": native_export_receipt,
         "mp4_path": str(mp4_path),
         "mp4_bytes": mp4_path.stat().st_size,
         "mp4_sha256": compute_sha256(mp4_path),

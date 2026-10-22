@@ -458,6 +458,7 @@ KUKU (giggling): "Hehehe! Two yellow flowers!"
     wav_b = dir_b / "assets" / "ep_b_voiceover_master_48k_stereo.wav"
     assert wav_a.is_file() and wav_a.stat().st_size > 0
     assert wav_b.is_file() and wav_b.stat().st_size > 0
+    assert wav_a.read_bytes() != wav_b.read_bytes(), "Script A and Script B must produce distinct audio content!"
     # Files have distinct content derived from their respective scripts
     assert res_a["episode_id"] == "EP_A"
     assert res_b["episode_id"] == "EP_B"

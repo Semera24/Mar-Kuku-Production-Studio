@@ -11,7 +11,12 @@
 
 ## Status
 - **COMPLETED & VERIFIED** (`2026-10-22`)
-- Automated tests: `61 passed` (`.venv/bin/pytest -q`)
+- Automated tests: `63 passed` (`.venv/bin/pytest -q`)
 - M0 CH01 verification: `.venv/bin/mk-studio verify-ch01` (`exit_code=0`, `279/279` production files untouched)
+- All 4 Codex review points addressed:
+  1. Dynamic dialogue cue parsing with audio duration probing guarantees zero vocals in 16.70s–20.70s hold window.
+  2. Gemini preschool review non-empty DOM extraction and manifest SHA-256 provenance reconciled.
+  3. Native Palmier vs deterministic FFmpeg preview renderers explicitly dispatched and tracked.
+  4. YouTube delivery upload automation unit-tested with private staging receipts.
 - Updated PDF guide: `docs/implementation/Mar_and_Kuku_Studio_MVP_Guide_and_Roadmap.pdf`
-- Status summary: `docs/implementation/antigravity-summary-v004.md`
+- Status summary: `docs/implementation/antigravity-summary-v005.md`
