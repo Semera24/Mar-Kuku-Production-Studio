@@ -203,6 +203,7 @@ def parse_script_markdown(
     pending_time_s = None
     in_scene = False
     in_post_hold = False
+    conflicts = []
     hold_start_s = holds[0][0] / 30.0 if holds else 16.70
     hold_end_s = holds[0][1] / 30.0 if holds else 20.70
 
@@ -272,9 +273,21 @@ def parse_script_markdown(
                 else:
                     offset_s = 0.2
 
-            # Reject any dialogue that collides with the silent hold window
+            # Track any dialogue that collides with the silent hold window rather than silently dropping words
             if hold_start_s <= offset_s < hold_end_s:
-                continue
+                conflicts.append(
+                    {
+                        "speaker": speaker_raw,
+                        "text": spoken_text,
+                        "offset_s": round(offset_s, 2),
+                        "hold_window": [hold_start_s, hold_end_s],
+                        "message": (
+                            f"Dialogue line from {speaker_raw} ('{spoken_text}') scheduled at {offset_s:.2f}s "
+                            f"collides with silent hold [{hold_start_s:.2f}s..{hold_end_s:.2f}s]. "
+                            "Requires explicit timing alignment proposal."
+                        ),
+                    }
+                )
 
             dialogue_cues.append((round(offset_s, 2), voice, spoken_text))
 
@@ -283,6 +296,7 @@ def parse_script_markdown(
         "dialogue_cues": dialogue_cues,
         "holds": holds or [(501, 621)],
         "poses": poses,
+        "conflicts": conflicts,
     }
 
 
