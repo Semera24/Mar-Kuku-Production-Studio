@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +42,7 @@ class StudioOrchestrator:
         self.store.initialize_studio_schema()
         self.runner = StepRunner(self.store, lock_dir)
         self.cancel_event = threading.Event()
+        self._execution_lock = threading.Lock()
         self.browser = BrowserController(
             self.policy,
             self.store,
@@ -65,6 +67,8 @@ class StudioOrchestrator:
             cancel_event=self.cancel_event,
         )
         self.palmier = PalmierAdapter(self.policy)
+        from mk_studio.production import ProductionService
+        self.production = ProductionService(self.policy, cancel_event=self.cancel_event)
         self._ensure_default_conversation()
 
     def request_stop(self) -> dict[str, Any]:
@@ -133,7 +137,19 @@ class StudioOrchestrator:
                 lines.append(f"  [{m['role']}] ({m.get('provider_id') or 'studio'}): {snippet}")
         return "\n".join(lines)
 
-    def handle_chat_turn(
+    def handle_chat_turn(self, **kwargs):
+        """One writer per application; Stop remains callable while a job is running."""
+        stop = kwargs.get('action') == 'stop_workflow' or classify_chat_instruction(kwargs.get('user_message', '')) == 'stop_workflow'
+        if stop:
+            return self._handle_chat_turn(**kwargs)
+        if not self._execution_lock.acquire(blocking=False):
+            raise RuntimeError('Another Studio job is still running. Stop or wait for it to finish.')
+        try:
+            return self._handle_chat_turn(**kwargs)
+        finally:
+            self._execution_lock.release()
+
+    def _handle_chat_turn(
         self,
         *,
         conversation_id: str,
@@ -176,8 +192,14 @@ class StudioOrchestrator:
             elif intent_kind == "stop_workflow":
                 inferred_action = "stop_workflow"
 
-        if inferred_action != "stop_workflow":
+        if inferred_action in ('consult_three_agents', 'resume_workflow') or str(inferred_action).startswith('production_'):
             self.reset_stop()
+
+        if inferred_action == 'consult_three_agents':
+            ep_id = str(params.get('episode_id') or ('EP_' + hashlib.sha256(user_message.encode()).hexdigest()[:12]))
+            self.store.update_conversation_context(conversation_id, active_episode_id=ep_id)
+        else:
+            ep_id = str(params.get('episode_id') or conv.get('active_episode_id') or DEFAULT_TEST_EPISODE_ID)
 
         job = self.store.create_job(
             conversation_id=conversation_id,
@@ -204,13 +226,12 @@ class StudioOrchestrator:
                 )
 
             elif inferred_action in ("consult_three_agents", "resume_workflow"):
-                ep_id = str(params.get("episode_id") or DEFAULT_TEST_EPISODE_ID)
                 manifest = self.workflow.run_or_resume_consultation(
                     user_message,
                     episode_id=ep_id,
                     conversation_id=conversation_id,
                     stop_after_step=params.get("stop_after_step"),
-                    pause_on_manus_login=bool(params.get("pause_on_manus_login", False)),
+                    pause_on_manus_login=bool(params.get("pause_on_manus_login", True)),
                 )
                 result_payload = manifest
                 refs = manifest.get("conversation_references") or {}
@@ -244,7 +265,6 @@ class StudioOrchestrator:
                 )
 
             elif inferred_action == "followup_correction":
-                ep_id = str(params.get("episode_id") or DEFAULT_TEST_EPISODE_ID)
                 manifest = self.workflow.apply_followup_correction(
                     user_message,
                     episode_id=ep_id,
@@ -256,7 +276,7 @@ class StudioOrchestrator:
                 reply_text = (
                     f"Applied follow-up script correction (`{manifest.get('current_script_version')}`) for `{ep_id}`:\n"
                     f"- **Follow-Up ChatGPT URL:** `{refs.get('chatgpt_followup_url')}`\n"
-                    f"- **Updated Script (`v002`):** `{s5.get('script_v002_file')}`\n"
+                    f"- **Updated Script:** `{s5.get('script_file')}`\n"
                     f"- **Canonical Script Pointer:** `{manifest.get('current_script_path')}`\n"
                     f"- **Prior Steps Re-Submitted:** `0` (Steps 1–4 preserved from checkpoint)"
                 )
@@ -264,6 +284,37 @@ class StudioOrchestrator:
                     attachments.append(
                         {"label": "proposed_script_v002.md", "path": str(s5["script_v002_file"])}
                     )
+
+            elif inferred_action and inferred_action.startswith('production_'):
+                from mk_studio.browser.assets import BrowserAssetGenerator
+                from mk_studio.delivery import YouTubeDelivery, YouTubeMetadata
+                stage = inferred_action.removeprefix('production_')
+                if stage == 'draft':
+                    result_payload = self.production.draft(
+                        params['script_path'], params['asset_manifest_path'],
+                        lambda prompt: self.providers.generate(eff_provider, prompt, conversation_id=conversation_id))
+                elif stage == 'approve':
+                    result_payload = self.production.approve(params['brief_path'])
+                elif stage in ('prepare', 'voice', 'render'):
+                    brief = self.production.load_brief(params['brief_path'])
+                    method = {'prepare': self.production.prepare, 'voice': self.production.generate_voice,
+                              'render': self.production.render}[stage]
+                    result_payload = method(brief)
+                elif stage == 'generate_asset':
+                    result_payload = BrowserAssetGenerator(self.policy, self.browser).generate(
+                        provider=params['provider'], role=params['role'], prompt=params['prompt'], episode_id=ep_id)
+                elif stage == 'collect_asset':
+                    result_payload = BrowserAssetGenerator(self.policy, self.browser).collect(
+                        params['path'], role=params['role'], provider=params['provider'], prompt=params.get('prompt', 'Owner intake'))
+                elif stage == 'upload':
+                    metadata = YouTubeMetadata.model_validate(params['metadata'])
+                    result_payload = YouTubeDelivery(self.policy, self.browser).upload(
+                        Path(params['video_path']), metadata, Path(params['receipt_path']))
+                else:
+                    raise ValueError(f'Unknown production stage: {stage}')
+                reply_text = json.dumps(result_payload, indent=2)
+                if str(result_payload.get('status', '')).startswith(('awaiting_', 'submitted_')):
+                    job_status = 'blocked'
 
             elif inferred_action == "verify_ch01":
                 rc = cli.cmd_verify_ch01(self.policy)
@@ -365,6 +416,8 @@ class StudioOrchestrator:
                 )
 
             else:
+                if self.cancel_event.is_set():
+                    raise BrowserCancelledError('Studio remains stopped. Resume explicitly before sending provider work.')
                 gen_res = self.providers.generate(
                     eff_provider,
                     user_message,
@@ -391,7 +444,7 @@ class StudioOrchestrator:
             )
         except (WorkflowStoppedError, BrowserCancelledError) as stop_exc:
             job_status = "stopped"
-            wf_state = self.workflow.load_manifest(DEFAULT_TEST_EPISODE_ID)
+            wf_state = self.workflow.load_manifest(ep_id)
             result_payload = {"stopped": True, "reason": str(stop_exc), "workflow": wf_state}
             reply_text = (
                 f"Workflow paused/stopped safely: {stop_exc}\n"

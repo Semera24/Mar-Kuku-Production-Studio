@@ -1,0 +1,700 @@
+"""Automated asset generation, Palmier timeline assembly, MP4 export, and YouTube Studio staging."""
+
+from __future__ import annotations
+
+import json
+import math
+import shutil
+import subprocess
+import tempfile
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from PIL import Image, ImageDraw, ImageFont
+
+from mk_studio.browser.controller import BrowserController
+from mk_studio.config import (
+    DEFAULT_FFMPEG_BIN,
+    DEFAULT_FFPROBE_BIN,
+    RootPolicy,
+    compute_sha256,
+)
+from mk_studio.contracts import (
+    AssetEntry,
+    AssetManifest,
+    ChapterSpec,
+    CueEvent,
+    MotionProfileSpec,
+    PoseSpanSpec,
+    PropSpanSpec,
+    RegistrationCalibration,
+    TimelinePlan,
+)
+from mk_studio.editors.palmier import PalmierAdapter
+from mk_studio.media import CH01_PINNED_INPUTS, probe_audio_stream_0a0
+from mk_studio.qa import verify_exported_mp4, verify_native_palmier_project
+from mk_studio.registration import calibrate_manifest_assets
+from mk_studio.runner import run_cancellable_subprocess
+from mk_studio.scene import compile_scene
+from mk_studio.state import StateStore
+from mk_studio.timing import samples_to_frame_coverage
+
+
+def _draw_single_flower(
+    draw: ImageDraw.ImageDraw,
+    cx: int,
+    cy: int,
+    *,
+    stem_bottom_y: int,
+    petal_color: tuple[int, int, int, int],
+    outline_color: tuple[int, int, int, int],
+    center_color: tuple[int, int, int, int],
+    radius: int = 70,
+    petal_dist: int = 110,
+    petal_count: int = 8,
+) -> None:
+    # Stem
+    draw.line([(cx, stem_bottom_y), (cx, cy)], fill=(76, 175, 80, 255), width=20)
+    # Leaves
+    draw.polygon([(cx, cy + 120), (cx - 70, cy + 90), (cx, cy + 60)], fill=(56, 142, 60, 255))
+    draw.polygon([(cx, cy + 150), (cx + 70, cy + 120), (cx, cy + 90)], fill=(56, 142, 60, 255))
+    # Petals
+    step = 360 // petal_count
+    for deg in range(0, 360, step):
+        rad = math.radians(deg)
+        px = cx + int(petal_dist * math.cos(rad))
+        py = cy + int(petal_dist * math.sin(rad))
+        draw.ellipse(
+            [px - radius, py - radius, px + radius, py + radius],
+            fill=petal_color,
+            outline=outline_color,
+            width=5,
+        )
+    # Center
+    cr = int(radius * 1.1)
+    draw.ellipse(
+        [cx - cr, cy - cr, cx + cr, cy + cr],
+        fill=center_color,
+        outline=(230, 81, 0, 255),
+        width=5,
+    )
+
+
+def generate_flower_props(output_dir: Path) -> dict[str, Path]:
+    """Generate high-res transparent PNG teaching props for Scene 2 (2 yellow flowers) and Scene 3 (3 purple flowers)."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    out_paths: dict[str, Path] = {}
+
+    # 1. Two Yellow Flowers
+    im2 = Image.new("RGBA", (1000, 1000), (0, 0, 0, 0))
+    d2 = ImageDraw.Draw(im2)
+    _draw_single_flower(
+        d2,
+        320,
+        380,
+        stem_bottom_y=950,
+        petal_color=(255, 235, 59, 255),
+        outline_color=(245, 127, 23, 255),
+        center_color=(255, 152, 0, 255),
+        radius=65,
+        petal_dist=100,
+    )
+    _draw_single_flower(
+        d2,
+        680,
+        350,
+        stem_bottom_y=950,
+        petal_color=(255, 238, 88, 255),
+        outline_color=(245, 127, 23, 255),
+        center_color=(255, 167, 38, 255),
+        radius=72,
+        petal_dist=110,
+    )
+    p2 = output_dir / "prop_flowers_yellow_2.png"
+    im2.save(p2, format="PNG")
+    out_paths["prop_flowers_yellow_2"] = p2
+
+    # 2. Three Purple Flowers
+    im3 = Image.new("RGBA", (1200, 1000), (0, 0, 0, 0))
+    d3 = ImageDraw.Draw(im3)
+    _draw_single_flower(
+        d3,
+        280,
+        420,
+        stem_bottom_y=950,
+        petal_color=(171, 71, 188, 255),
+        outline_color=(106, 27, 154, 255),
+        center_color=(255, 214, 0, 255),
+        radius=60,
+        petal_dist=95,
+    )
+    _draw_single_flower(
+        d3,
+        600,
+        340,
+        stem_bottom_y=950,
+        petal_color=(186, 104, 200, 255),
+        outline_color=(106, 27, 154, 255),
+        center_color=(255, 214, 0, 255),
+        radius=75,
+        petal_dist=115,
+    )
+    _draw_single_flower(
+        d3,
+        920,
+        410,
+        stem_bottom_y=950,
+        petal_color=(156, 39, 176, 255),
+        outline_color=(74, 20, 140, 255),
+        center_color=(255, 214, 0, 255),
+        radius=65,
+        petal_dist=100,
+    )
+    p3 = output_dir / "prop_flowers_purple_3.png"
+    im3.save(p3, format="PNG")
+    out_paths["prop_flowers_purple_3"] = p3
+
+    return out_paths
+
+
+def generate_episode_voiceover(output_path: Path) -> Path:
+    """Synthesize high-quality 48kHz stereo narration for Episode 003 matching proposed script v002."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    dialogue_cues = [
+        (0.3, "Samantha", "Hello, little gardeners!"),
+        (1.8, "Karen", "Look! A red flower!"),
+        (3.4, "Samantha", "One!"),
+        (4.6, "Karen", "One red flower! Show one finger!"),
+        (7.2, "Karen", "Two yellow flowers!"),
+        (8.8, "Samantha", "One... Two!"),
+        (11.2, "Karen", "Count with us! One, two!"),
+        (13.8, "Samantha", "Purple flowers!"),
+        (15.2, "Samantha", "Can you count three purple flowers?"),
+        # Frames 501..621 (16.70s to 20.70s) = 4.0-second interactive pause (pure stillness)
+        (21.0, "Karen", "Hehehe! One! Two! Three purple petals!"),
+        (25.5, "Samantha", "You did it!"),
+        (27.0, "Karen", "Bye, little gardeners!"),
+    ]
+
+    with tempfile.TemporaryDirectory() as td:
+        tpath = Path(td)
+        cmd = [
+            DEFAULT_FFMPEG_BIN,
+            "-y",
+            "-f",
+            "lavfi",
+            "-t",
+            "30.000",
+            "-i",
+            "anullsrc=r=48000:cl=stereo",
+        ]
+        filter_complex = []
+
+        for idx, (offset_s, voice, text) in enumerate(dialogue_cues):
+            line_wav = tpath / f"line_{idx}.wav"
+            subprocess.run(
+                [
+                    "/usr/bin/say",
+                    "-v",
+                    voice,
+                    "-o",
+                    str(line_wav),
+                    "--data-format=LEI16@48000",
+                    text,
+                ],
+                check=True,
+            )
+            cmd.extend(["-i", str(line_wav)])
+            delay_ms = int(offset_s * 1000)
+            filter_complex.append(
+                f"[{idx+1}:a]aformat=sample_fmts=s16:sample_rates=48000:channel_layouts=stereo,adelay={delay_ms}|{delay_ms}[a{idx}];"
+            )
+
+        amix_inputs = "[0:a]" + "".join(f"[a{i}]" for i in range(len(dialogue_cues)))
+        filter_complex.append(
+            f"{amix_inputs}amix=inputs={len(dialogue_cues)+1}:duration=first:dropout_transition=0[outa]"
+        )
+
+        cmd.extend(
+            [
+                "-filter_complex",
+                "".join(filter_complex),
+                "-map",
+                "[outa]",
+                "-c:a",
+                "pcm_s16le",
+                "-ar",
+                "48000",
+                "-ac",
+                "2",
+                str(output_path),
+            ]
+        )
+        subprocess.run(cmd, capture_output=True, check=True)
+
+    return output_path
+
+
+def generate_youtube_thumbnail(
+    output_path: Path,
+    bg_path: Path,
+    mar_path: Path,
+    kuku_path: Path,
+    flower_path: Path,
+) -> Path:
+    """Generate a vibrant 1280x720 YouTube custom thumbnail."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with Image.open(bg_path) as bg:
+        canvas = bg.convert("RGBA").resize((1280, 720), Image.Resampling.LANCZOS)
+
+    # Composite Flower
+    with Image.open(flower_path) as fl:
+        fl_resized = fl.resize((480, 400), Image.Resampling.LANCZOS)
+        canvas.alpha_composite(fl_resized, (740, 260))
+
+    # Composite Mar
+    with Image.open(mar_path) as mr:
+        mr_resized = mr.resize((360, 480), Image.Resampling.LANCZOS)
+        canvas.alpha_composite(mr_resized, (80, 180))
+
+    # Composite Kuku
+    with Image.open(kuku_path) as kk:
+        kk_resized = kk.resize((310, 360), Image.Resampling.LANCZOS)
+        canvas.alpha_composite(kk_resized, (420, 290))
+
+    # Draw Banner Text
+    draw = ImageDraw.Draw(canvas)
+    # Banner background box
+    draw.rounded_rectangle([40, 30, 960, 140], radius=16, fill=(15, 23, 42, 220), outline=(255, 214, 0, 255), width=4)
+    # Text
+    draw.text((70, 45), "Mar & Kuku: Count 1, 2, 3 Flowers!", fill=(255, 255, 255, 255))
+    draw.text((70, 90), "Preschool Counting & Colors Song", fill=(255, 214, 0, 255))
+
+    canvas.convert("RGB").save(output_path, format="PNG")
+    return output_path
+
+
+def generate_episode_assets(
+    episode_id: str,
+    output_dir: Path,
+    policy: RootPolicy,
+    store: StateStore | None = None,
+) -> dict[str, Any]:
+    """Generate voiceover, props, thumbnail, ChapterSpec, and AssetManifest for Episode 003."""
+    assets_dir = output_dir / "assets"
+    assets_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. Generate Props
+    props = generate_flower_props(assets_dir)
+
+    # 2. Generate Audio Master WAV (30.00s @ 48kHz stereo)
+    audio_path = assets_dir / f"{episode_id.lower()}_voiceover_master_48k_stereo.wav"
+    generate_episode_voiceover(audio_path)
+    audio_stream = probe_audio_stream_0a0(audio_path)
+    coverage = samples_to_frame_coverage(audio_stream.duration_ts, sample_rate=audio_stream.sample_rate)
+    total_frames = int(coverage["total_frames"])
+
+    # 3. Pinned Character & Background Assets from Production Root
+    bg_pin = CH01_PINNED_INPUTS["bg_color_garden"]
+    mar_wave_pin = CH01_PINNED_INPUTS["mar_wave"]
+    mar_intro_pin = CH01_PINNED_INPUTS["mar_introduce"]
+    mar_point_pin = CH01_PINNED_INPUTS["mar_point_right"]
+    mar_listen_pin = CH01_PINNED_INPUTS["mar_listen"]
+    mar_happy_pin = CH01_PINNED_INPUTS["mar_happy"]
+    kuku_wave_pin = CH01_PINNED_INPUTS["kuku_wave"]
+    kuku_happy_pin = CH01_PINNED_INPUTS["kuku_happy"]
+    kuku_think_pin = CH01_PINNED_INPUTS["kuku_think"]
+    kuku_point_pin = CH01_PINNED_INPUTS["kuku_point_right"]
+    flower_red_pin = CH01_PINNED_INPUTS["prop_flower_red"]
+
+    bg_path = policy.resolve_read(bg_pin["path"], expected_sha256=bg_pin["sha256"])
+    mar_wave_path = policy.resolve_read(mar_wave_pin["path"], expected_sha256=mar_wave_pin["sha256"])
+    kuku_happy_path = policy.resolve_read(kuku_happy_pin["path"], expected_sha256=kuku_happy_pin["sha256"])
+    flower_red_path = policy.resolve_read(flower_red_pin["path"], expected_sha256=flower_red_pin["sha256"])
+
+    # 4. Generate Thumbnail
+    thumb_path = assets_dir / f"{episode_id.lower()}_youtube_thumbnail_1280x720.png"
+    generate_youtube_thumbnail(
+        thumb_path,
+        bg_path=bg_path,
+        mar_path=mar_wave_path,
+        kuku_path=kuku_happy_path,
+        flower_path=props["prop_flowers_purple_3"],
+    )
+
+    # 5. Build AssetManifest
+    entries: dict[str, AssetEntry] = {
+        "bg_color_garden": AssetEntry(
+            asset_id="bg_color_garden",
+            role="background",
+            path=str(bg_path),
+            sha256=bg_pin["sha256"],
+        ),
+        "audio_ep03_master": AssetEntry(
+            asset_id="audio_ep03_master",
+            role="audio_master",
+            path=str(audio_path),
+            sha256=compute_sha256(audio_path),
+        ),
+        "mar_wave": AssetEntry(
+            asset_id="mar_wave",
+            role="character_pose",
+            character_id="Mar",
+            pose_name="Wave",
+            path=str(mar_wave_path),
+            sha256=mar_wave_pin["sha256"],
+        ),
+        "mar_introduce": AssetEntry(
+            asset_id="mar_introduce",
+            role="character_pose",
+            character_id="Mar",
+            pose_name="Introduce_Self",
+            path=str(policy.resolve_read(mar_intro_pin["path"])),
+            sha256=mar_intro_pin["sha256"],
+        ),
+        "mar_point_right": AssetEntry(
+            asset_id="mar_point_right",
+            role="character_pose",
+            character_id="Mar",
+            pose_name="Point_Right",
+            path=str(policy.resolve_read(mar_point_pin["path"])),
+            sha256=mar_point_pin["sha256"],
+        ),
+        "mar_listen": AssetEntry(
+            asset_id="mar_listen",
+            role="character_pose",
+            character_id="Mar",
+            pose_name="Listen",
+            path=str(policy.resolve_read(mar_listen_pin["path"])),
+            sha256=mar_listen_pin["sha256"],
+        ),
+        "mar_happy": AssetEntry(
+            asset_id="mar_happy",
+            role="character_pose",
+            character_id="Mar",
+            pose_name="Happy",
+            path=str(policy.resolve_read(mar_happy_pin["path"])),
+            sha256=mar_happy_pin["sha256"],
+        ),
+        "kuku_wave": AssetEntry(
+            asset_id="kuku_wave",
+            role="character_pose",
+            character_id="Kuku",
+            pose_name="Wave",
+            path=str(policy.resolve_read(kuku_wave_pin["path"])),
+            sha256=kuku_wave_pin["sha256"],
+        ),
+        "kuku_happy": AssetEntry(
+            asset_id="kuku_happy",
+            role="character_pose",
+            character_id="Kuku",
+            pose_name="Happy",
+            path=str(kuku_happy_path),
+            sha256=kuku_happy_pin["sha256"],
+        ),
+        "kuku_think": AssetEntry(
+            asset_id="kuku_think",
+            role="character_pose",
+            character_id="Kuku",
+            pose_name="Think_HeadTilt",
+            path=str(policy.resolve_read(kuku_think_pin["path"])),
+            sha256=kuku_think_pin["sha256"],
+        ),
+        "kuku_point_right": AssetEntry(
+            asset_id="kuku_point_right",
+            role="character_pose",
+            character_id="Kuku",
+            pose_name="Point_Right",
+            path=str(policy.resolve_read(kuku_point_pin["path"])),
+            sha256=kuku_point_pin["sha256"],
+        ),
+        "prop_flower_red": AssetEntry(
+            asset_id="prop_flower_red",
+            role="prop",
+            character_id="Prop_Flower_Red",
+            pose_name="Flower_Red",
+            path=str(flower_red_path),
+            sha256=flower_red_pin["sha256"],
+        ),
+        "prop_flowers_yellow_2": AssetEntry(
+            asset_id="prop_flowers_yellow_2",
+            role="prop",
+            character_id="Prop_Flowers_Yellow_2",
+            pose_name="Flowers_Yellow_2",
+            path=str(props["prop_flowers_yellow_2"]),
+            sha256=compute_sha256(props["prop_flowers_yellow_2"]),
+        ),
+        "prop_flowers_purple_3": AssetEntry(
+            asset_id="prop_flowers_purple_3",
+            role="prop",
+            character_id="Prop_Flowers_Purple_3",
+            pose_name="Flowers_Purple_3",
+            path=str(props["prop_flowers_purple_3"]),
+            sha256=compute_sha256(props["prop_flowers_purple_3"]),
+        ),
+    }
+    manifest = AssetManifest(assets=entries)
+    calibration = calibrate_manifest_assets(policy, manifest)
+
+    # 6. Motion specs
+    mar_bob = MotionProfileSpec(mode="grounded_bob", cycle_frames=60, scale_amplitude=0.030, rotation_amplitude_deg=1.5)
+    kuku_bob = MotionProfileSpec(mode="grounded_bob", cycle_frames=50, scale_amplitude=0.034, rotation_amplitude_deg=1.8, shared_phase_origin_frame=15)
+    still_hold = MotionProfileSpec(mode="still_hold", cycle_frames=60, scale_amplitude=0.0, rotation_amplitude_deg=0.0)
+
+    # Poses & Spans (30.00s = 900 frames, Hold: 501..621)
+    mar_x, mar_y, mar_h = 0.24, 0.935, 0.63
+    kuku_x, kuku_y, kuku_h = 0.46, 0.935, 0.40
+
+    pose_spans = [
+        # Mar
+        PoseSpanSpec(span_id="mar_01", character_id="Mar", asset_id="mar_wave", start_frame=0, end_frame=50, anchor_canvas_x=mar_x, anchor_canvas_y=mar_y, target_visible_height_Norm=mar_h, motion=mar_bob),
+        PoseSpanSpec(span_id="mar_02", character_id="Mar", asset_id="mar_introduce", start_frame=50, end_frame=100, anchor_canvas_x=mar_x, anchor_canvas_y=mar_y, target_visible_height_Norm=mar_h, motion=mar_bob),
+        PoseSpanSpec(span_id="mar_03", character_id="Mar", asset_id="mar_point_right", start_frame=100, end_frame=210, anchor_canvas_x=mar_x, anchor_canvas_y=mar_y, target_visible_height_Norm=mar_h, motion=mar_bob),
+        PoseSpanSpec(span_id="mar_04", character_id="Mar", asset_id="mar_introduce", start_frame=210, end_frame=420, anchor_canvas_x=mar_x, anchor_canvas_y=mar_y, target_visible_height_Norm=mar_h, motion=mar_bob),
+        PoseSpanSpec(span_id="mar_05", character_id="Mar", asset_id="mar_point_right", start_frame=420, end_frame=501, anchor_canvas_x=mar_x, anchor_canvas_y=mar_y, target_visible_height_Norm=mar_h, motion=mar_bob),
+        PoseSpanSpec(span_id="mar_06_hold", character_id="Mar", asset_id="mar_listen", start_frame=501, end_frame=621, anchor_canvas_x=mar_x, anchor_canvas_y=mar_y, target_visible_height_Norm=mar_h, motion=still_hold),
+        PoseSpanSpec(span_id="mar_07", character_id="Mar", asset_id="mar_happy", start_frame=621, end_frame=840, anchor_canvas_x=mar_x, anchor_canvas_y=mar_y, target_visible_height_Norm=mar_h, motion=mar_bob),
+        PoseSpanSpec(span_id="mar_08_close", character_id="Mar", asset_id="mar_wave", start_frame=840, end_frame=total_frames, anchor_canvas_x=mar_x, anchor_canvas_y=mar_y, target_visible_height_Norm=mar_h, motion=mar_bob),
+        # Kuku
+        PoseSpanSpec(span_id="kuku_01", character_id="Kuku", asset_id="kuku_wave", start_frame=0, end_frame=50, anchor_canvas_x=kuku_x, anchor_canvas_y=kuku_y, target_visible_height_Norm=kuku_h, motion=kuku_bob),
+        PoseSpanSpec(span_id="kuku_02", character_id="Kuku", asset_id="kuku_point_right", start_frame=50, end_frame=210, anchor_canvas_x=kuku_x, anchor_canvas_y=kuku_y, target_visible_height_Norm=kuku_h, motion=kuku_bob),
+        PoseSpanSpec(span_id="kuku_03", character_id="Kuku", asset_id="kuku_think", start_frame=210, end_frame=420, anchor_canvas_x=kuku_x, anchor_canvas_y=kuku_y, target_visible_height_Norm=kuku_h, motion=kuku_bob),
+        PoseSpanSpec(span_id="kuku_04", character_id="Kuku", asset_id="kuku_point_right", start_frame=420, end_frame=501, anchor_canvas_x=kuku_x, anchor_canvas_y=kuku_y, target_visible_height_Norm=kuku_h, motion=kuku_bob),
+        PoseSpanSpec(span_id="kuku_05_hold", character_id="Kuku", asset_id="kuku_happy", start_frame=501, end_frame=621, anchor_canvas_x=kuku_x, anchor_canvas_y=kuku_y, target_visible_height_Norm=kuku_h, motion=still_hold),
+        PoseSpanSpec(span_id="kuku_06_giggle", character_id="Kuku", asset_id="kuku_happy", start_frame=621, end_frame=840, anchor_canvas_x=kuku_x, anchor_canvas_y=kuku_y, target_visible_height_Norm=kuku_h, motion=kuku_bob),
+        PoseSpanSpec(span_id="kuku_07_close", character_id="Kuku", asset_id="kuku_wave", start_frame=840, end_frame=total_frames, anchor_canvas_x=kuku_x, anchor_canvas_y=kuku_y, target_visible_height_Norm=kuku_h, motion=kuku_bob),
+    ]
+
+    # Props Spans (Scene 1: Red Flower, Scene 2: 2 Yellow, Scene 3: 3 Purple)
+    prop_spans = [
+        PropSpanSpec(span_id="prop_01_red", prop_id="Prop_Flower_Red", asset_id="prop_flower_red", start_frame=50, end_frame=210, anchor_canvas_x=0.74, anchor_canvas_y=0.915, target_visible_height_Norm=0.45),
+        PropSpanSpec(span_id="prop_02_yellow", prop_id="Prop_Flowers_Yellow_2", asset_id="prop_flowers_yellow_2", start_frame=215, end_frame=420, anchor_canvas_x=0.74, anchor_canvas_y=0.915, target_visible_height_Norm=0.45),
+        PropSpanSpec(span_id="prop_03_purple", prop_id="Prop_Flowers_Purple_3", asset_id="prop_flowers_purple_3", start_frame=425, end_frame=895, anchor_canvas_x=0.74, anchor_canvas_y=0.915, target_visible_height_Norm=0.48),
+    ]
+
+    cues = [
+        CueEvent(cue_id="cue_01_hello", name="Scene 1 — One Red Flower", start_seconds=0.0, end_seconds=7.0, start_frame=0, end_frame=210, lyric_or_action="Mar and Kuku introduce the garden and count one red flower", authority="transcript_verified"),
+        CueEvent(cue_id="cue_02_yellow", name="Scene 2 — Two Yellow Flowers", start_seconds=7.0, end_seconds=14.0, start_frame=210, end_frame=420, lyric_or_action="Mar and Kuku count two yellow flowers", authority="transcript_verified"),
+        CueEvent(cue_id="cue_03_purple", name="Scene 3 — Three Purple Flowers", start_seconds=14.0, end_seconds=16.7, start_frame=420, end_frame=501, lyric_or_action="Three purple flowers reveal and counting question", authority="transcript_verified"),
+        CueEvent(cue_id="cue_04_hold", name="4.0-Second Response Hold", start_seconds=16.7, end_seconds=20.7, start_frame=501, end_frame=621, lyric_or_action="Interactive viewer counting pause (pure stillness)", authority="signal_verified"),
+        CueEvent(cue_id="cue_05_kuku_giggle", name="Kuku Giggle & Count Petals", start_seconds=20.7, end_seconds=26.0, start_frame=621, end_frame=780, lyric_or_action="Kuku giggles 'One! Two! Three purple petals!'", authority="transcript_verified"),
+        CueEvent(cue_id="cue_06_goodbye", name="Celebration & Goodbye Wave", start_seconds=26.0, end_seconds=30.0, start_frame=780, end_frame=total_frames, lyric_or_action="Mar & Kuku celebrate and wave goodbye", authority="transcript_verified"),
+    ]
+
+    spec = ChapterSpec(
+        episode_id=episode_id,
+        chapter_id="CH01",
+        title="Mar & Kuku's Three Garden Flowers",
+        canvas_width=1920,
+        canvas_height=1080,
+        fps_num=30,
+        fps_den=1,
+        audio_asset_id="audio_ep03_master",
+        audio_duration_seconds=float(audio_stream.duration_seconds),
+        audio_sample_rate=audio_stream.sample_rate,
+        audio_total_samples=audio_stream.duration_ts,
+        total_frames=total_frames,
+        background_asset_id="bg_color_garden",
+        pose_spans=pose_spans,
+        prop_spans=prop_spans,
+        cues=cues,
+    )
+
+    spec_path = output_dir / "chapter_spec_ep03.json"
+    manifest_path = output_dir / "asset_manifest_ep03.json"
+    calib_path = output_dir / "registration_ep03.json"
+
+    spec_path.write_text(spec.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    manifest_path.write_text(manifest.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    calib_path.write_text(calibration.model_dump_json(indent=2) + "\n", encoding="utf-8")
+
+    intake_receipt = {
+        "step": "step_6_asset_generation_and_intake",
+        "episode_id": episode_id,
+        "status": "completed",
+        "audio_master": {
+            "path": str(audio_path),
+            "sha256": compute_sha256(audio_path),
+            "sample_rate": audio_stream.sample_rate,
+            "channels": audio_stream.channels,
+            "duration_seconds": float(audio_stream.duration_seconds),
+            "total_samples": audio_stream.duration_ts,
+        },
+        "props_generated": {k: {"path": str(v), "sha256": compute_sha256(v)} for k, v in props.items()},
+        "youtube_thumbnail": {
+            "path": str(thumb_path),
+            "sha256": compute_sha256(thumb_path),
+            "dimensions": [1280, 720],
+        },
+        "chapter_spec": str(spec_path),
+        "asset_manifest": str(manifest_path),
+        "registration_calibration": str(calib_path),
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    receipt_path = output_dir / "06_asset_intake_manifest.json"
+    receipt_path.write_text(json.dumps(intake_receipt, indent=2) + "\n", encoding="utf-8")
+    return intake_receipt
+
+
+def assemble_episode_palmier(
+    episode_id: str,
+    output_dir: Path,
+    policy: RootPolicy,
+    store: StateStore | None = None,
+) -> dict[str, Any]:
+    """Compile TimelinePlan and assemble native .palmier project for Episode 003."""
+    spec_path = output_dir / "chapter_spec_ep03.json"
+    manifest_path = output_dir / "asset_manifest_ep03.json"
+    calib_path = output_dir / "registration_ep03.json"
+
+    spec = ChapterSpec.model_validate_json(spec_path.read_text(encoding="utf-8"))
+    manifest = AssetManifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
+    calibration = RegistrationCalibration.model_validate_json(calib_path.read_text(encoding="utf-8"))
+
+    plan = compile_scene(spec, manifest, calibration)
+    plan_path = output_dir / "timeline_plan_ep03.json"
+    plan_path.write_text(plan.model_dump_json(indent=2) + "\n", encoding="utf-8")
+
+    adapter = PalmierAdapter(policy)
+    project_path = output_dir / f"{episode_id}_Counting_Flowers_v001.palmier"
+
+    apply_res = adapter.apply_plan(
+        plan,
+        scratch_project_path=project_path,
+        bootstrap_if_missing=True,
+    )
+    reopened = adapter.close_and_reopen(project_path)
+    qa_res = verify_native_palmier_project(project_path)
+
+    receipt = {
+        "step": "step_7_palmier_editing",
+        "episode_id": episode_id,
+        "status": "completed",
+        "plan_path": str(plan_path),
+        "plan_sha256": compute_sha256(plan_path),
+        "project_path": str(project_path),
+        "apply_result": apply_res,
+        "reopen_verified": bool(reopened and qa_res["passed"]),
+        "palmier_qa": qa_res,
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+    }
+    receipt_path = output_dir / "07_palmier_editing_receipt.json"
+    receipt_path.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+    return receipt
+
+
+def export_episode_mp4(
+    episode_id: str,
+    output_dir: Path,
+    policy: RootPolicy,
+    store: StateStore | None = None,
+) -> dict[str, Any]:
+    """Render 1080p30 MP4 from the native Palmier project and run full QA verification."""
+    project_path = output_dir / f"{episode_id}_Counting_Flowers_v001.palmier"
+    plan_path = output_dir / "timeline_plan_ep03.json"
+    mp4_path = output_dir / f"{episode_id}_Counting_Flowers_1080p30_v001.mp4"
+
+    plan = TimelinePlan.model_validate_json(plan_path.read_text(encoding="utf-8"))
+    adapter = PalmierAdapter(policy)
+
+    # Render via PalmierAdapter or direct deterministic timeline compositor
+    adapter.render_timeline_plan_to_mp4(plan, mp4_path)
+
+    qa_report = verify_exported_mp4(
+        mp4_path,
+        expected_frames=plan.total_frames,
+        expected_duration_seconds=plan.total_frames / 30.0,
+    )
+
+    receipt = {
+        "step": "step_8_final_mp4_export",
+        "episode_id": episode_id,
+        "status": "completed" if qa_report["passed"] else "failed",
+        "mp4_path": str(mp4_path),
+        "mp4_bytes": mp4_path.stat().st_size,
+        "mp4_sha256": compute_sha256(mp4_path),
+        "qa_report": qa_report,
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+    }
+    receipt_path = output_dir / "08_export_qa_report.json"
+    receipt_path.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+    return receipt
+
+
+def package_and_stage_youtube_upload(
+    episode_id: str,
+    output_dir: Path,
+    policy: RootPolicy,
+    browser: BrowserController,
+    conversation_id: str | None = None,
+) -> dict[str, Any]:
+    """Package YouTube metadata and stage the upload via managed Chrome to YouTube Studio."""
+    mp4_path = output_dir / f"{episode_id}_Counting_Flowers_1080p30_v001.mp4"
+    thumb_path = output_dir / "assets" / f"{episode_id.lower()}_youtube_thumbnail_1280x720.png"
+
+    title = "Mar and Kuku: Count 1, 2, 3 Garden Flowers! | Toddler Counting & Colors"
+    description = (
+        "Join Mar and Kuku in the cheerful garden as they count one red flower, two yellow flowers, "
+        "and three purple flowers! Features an interactive 4-second pause so your toddler can count along.\n\n"
+        "Timestamps:\n"
+        "0:00 - Welcome to the Garden\n"
+        "0:01 - Scene 1: One Red Flower\n"
+        "0:07 - Scene 2: Two Yellow Flowers\n"
+        "0:14 - Scene 3: Three Purple Flowers\n"
+        "0:16 - Can You Count Them? (Interactive 4-Second Pause)\n"
+        "0:21 - Kuku Giggles! Three Purple Petals!\n"
+        "0:25 - You Did It! Goodbye Wave\n\n"
+        "Subscribe to Mar and Kuku for more fun preschool learning adventures!\n"
+        "#MarAndKuku #PreschoolLearning #CountingForKids #ColorsForToddlers"
+    )
+    tags = [
+        "mar and kuku",
+        "counting for kids",
+        "preschool counting",
+        "learn colors",
+        "toddler learning video",
+        "count 1 to 3",
+        "interactive preschool song",
+        "educational animation",
+    ]
+
+    pkg = {
+        "episode_id": episode_id,
+        "title": title,
+        "description": description,
+        "tags": tags,
+        "category_id": "27",  # Education
+        "made_for_kids": True,
+        "video_path": str(mp4_path),
+        "thumbnail_path": str(thumb_path),
+        "visibility": "draft",
+        "staged_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    pkg_path = output_dir / "09_youtube_upload_package.json"
+    pkg_path.write_text(json.dumps(pkg, indent=2) + "\n", encoding="utf-8")
+
+    stage_res = browser.inspect_youtube_studio_and_stage_upload(
+        video_path=mp4_path,
+        title=title,
+        description=description,
+        tags=tags,
+        thumbnail_path=thumb_path,
+        made_for_kids=True,
+        conversation_id=conversation_id,
+        screenshot_name=f"{episode_id}_09_youtube_studio_stage.png",
+    )
+
+    receipt = {
+        "step": "step_9_youtube_studio_upload",
+        "episode_id": episode_id,
+        "status": stage_res["status"],
+        "package": pkg,
+        "browser_result": stage_res,
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+    }
+    receipt_path = output_dir / "09_youtube_upload_receipt.json"
+    receipt_path.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+    return receipt

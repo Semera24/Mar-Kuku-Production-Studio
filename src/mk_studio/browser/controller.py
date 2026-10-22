@@ -1341,3 +1341,91 @@ class BrowserController:
             "screenshot": shot,
             "task": rec,
         }
+
+    def inspect_youtube_studio_and_stage_upload(
+        self,
+        *,
+        video_path: str | Path,
+        title: str,
+        description: str,
+        tags: list[str] | None = None,
+        thumbnail_path: str | Path | None = None,
+        made_for_kids: bool = True,
+        conversation_id: str | None = None,
+        screenshot_name: str = "youtube_studio_stage_capture.png",
+        target_url: str = "https://studio.youtube.com/",
+    ) -> dict[str, Any]:
+        """Navigate to YouTube Studio in the managed Chrome browser, check authentication, and stage or prepare video upload."""
+        self._require_not_in_takeover()
+        vid = Path(video_path).expanduser().resolve(strict=True)
+        vid_sha = compute_sha256(vid)
+
+        self.open_url(target_url, conversation_id=conversation_id, wait_seconds=10.0)
+        time.sleep(2.0)
+
+        dom = self.inspect_dom()
+        live_url = str(dom.get("url") or target_url)
+        body_text = str(dom.get("bodyTextExcerpt") or "")
+
+        login_gate = (
+            "accounts.google.com" in live_url
+            or "Sign in to YouTube" in body_text
+            or "Sign in" in str(dom.get("title") or "")
+            or "Choose an account" in body_text
+        )
+
+        shot = self.capture_screenshot(screenshot_name, conversation_id=conversation_id)
+
+        if login_gate:
+            status = "awaiting_owner_youtube_login"
+            summary_msg = (
+                f"YouTube Studio opened at {live_url}. Google authentication is required to access your YouTube channel. "
+                "Use Owner Takeover in Studio to sign into your channel once in this Chrome session."
+            )
+        else:
+            status = "ready_for_upload"
+            summary_msg = (
+                f"YouTube Studio channel dashboard active at {live_url}. Video {vid.name} ({vid.stat().st_size} bytes) "
+                f"ready to upload with title: '{title[:50]}...'"
+            )
+
+        rec = self.store.record_browser_task(
+            conversation_id=conversation_id,
+            session_id=self.session_id,
+            url=live_url,
+            title=str(dom.get("title") or "YouTube Studio"),
+            action_kind="inspect_youtube_studio_and_stage_upload",
+            status=status,
+            artifact_path=shot["path"],
+            artifact_sha256=shot["sha256"],
+            summary={
+                "video_path": str(vid),
+                "video_bytes": vid.stat().st_size,
+                "video_sha256": vid_sha,
+                "title": title,
+                "login_gate": login_gate,
+                "status": status,
+                "url": live_url,
+                "message": summary_msg,
+            },
+        )
+
+        return {
+            "status": status,
+            "authenticated": not login_gate,
+            "login_gate": login_gate,
+            "url": live_url,
+            "title": str(dom.get("title") or "YouTube Studio"),
+            "video_path": str(vid),
+            "video_sha256": vid_sha,
+            "metadata_package": {
+                "title": title,
+                "description": description,
+                "tags": tags or [],
+                "made_for_kids": made_for_kids,
+                "thumbnail_path": str(thumbnail_path) if thumbnail_path else None,
+            },
+            "screenshot": shot,
+            "message": summary_msg,
+            "task": rec,
+        }

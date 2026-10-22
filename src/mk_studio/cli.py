@@ -471,8 +471,36 @@ def main(argv: list[str] | None = None) -> int:
         help="Secret value (if omitted, reads from stdin or interactive getpass prompt)",
     )
 
+    p_produce = sub.add_parser('produce', help='Prepare, voice, or render a script-bound chapter')
+    p_produce.add_argument('stage', choices=['approve', 'prepare', 'voice', 'render'])
+    p_produce.add_argument('--brief', required=True, help='Absolute path to a ProductionBrief JSON')
+    p_upload = sub.add_parser('upload-youtube', help='Upload a verified chapter through managed Chrome')
+    p_upload.add_argument('--video', required=True)
+    p_upload.add_argument('--metadata', required=True, help='YouTubeMetadata JSON; private by default')
+    p_upload.add_argument('--receipt', required=True, help='New upload receipt path under scratch')
+
     args = parser.parse_args(argv)
     policy = RootPolicy(output_root=Path(args.output_root)) if args.output_root else RootPolicy()
+
+    if args.command == 'produce':
+        from mk_studio.production import ProductionService
+        service = ProductionService(policy)
+        if args.stage == 'approve':
+            result = service.approve(args.brief)
+        else:
+            method = {'prepare': service.prepare, 'voice': service.generate_voice, 'render': service.render}[args.stage]
+            result = method(service.load_brief(args.brief))
+        print(json.dumps(result, indent=2))
+        return 0
+    if args.command == 'upload-youtube':
+        from mk_studio.delivery import YouTubeDelivery, YouTubeMetadata
+        from mk_studio.browser.controller import BrowserController
+        store, _ = _get_store_and_runner(policy)
+        browser = BrowserController(policy, store)
+        metadata = YouTubeMetadata.model_validate_json(policy.resolve_read(Path(args.metadata).absolute()).read_text())
+        result = YouTubeDelivery(policy, browser).upload(Path(args.video), metadata, Path(args.receipt))
+        print(json.dumps(result, indent=2))
+        return 0
 
     if args.command == "doctor":
         return cmd_doctor(policy)
