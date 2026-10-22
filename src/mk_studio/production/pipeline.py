@@ -459,8 +459,9 @@ def generate_episode_assets(
     policy: RootPolicy,
     store: StateStore | None = None,
     script_path: str | Path | None = None,
+    source_audio_path: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Generate voiceover, props, thumbnail, ChapterSpec, and AssetManifest parsed directly from the selected script."""
+    """Generate voiceover or intake audio master, props, thumbnail, ChapterSpec, and AssetManifest."""
     assets_dir = output_dir / "assets"
     assets_dir.mkdir(parents=True, exist_ok=True)
 
@@ -485,9 +486,19 @@ def generate_episode_assets(
     # 1. Generate Props
     props = generate_flower_props(assets_dir)
 
-    # 2. Generate Audio Master WAV (30.00s @ 48kHz stereo, parsed from script)
+    # 2. Audio Master WAV (intake from real external source or test fallback)
     audio_path = assets_dir / f"{episode_id.lower()}_voiceover_master_48k_stereo.wav"
-    generate_episode_voiceover(audio_path, dialogue_cues=dialogue_cues)
+    audio_provider = "macos_speech_fallback"
+    is_test_provider = True
+
+    if source_audio_path and Path(source_audio_path).is_file():
+        src_audio = Path(source_audio_path).expanduser().resolve(strict=True)
+        shutil.copy2(src_audio, audio_path)
+        audio_provider = "google_music_intake"
+        is_test_provider = False
+    else:
+        generate_episode_voiceover(audio_path, dialogue_cues=dialogue_cues)
+
     audio_stream = probe_audio_stream_0a0(audio_path)
     coverage = samples_to_frame_coverage(audio_stream.duration_ts, sample_rate=audio_stream.sample_rate)
     total_frames = int(coverage["total_frames"])
@@ -710,6 +721,8 @@ def generate_episode_assets(
         "step": "step_6_asset_generation_and_intake",
         "episode_id": episode_id,
         "status": "completed",
+        "audio_provider": audio_provider,
+        "is_test_provider": is_test_provider,
         "audio_master": {
             "path": str(audio_path),
             "sha256": compute_sha256(audio_path),
@@ -749,6 +762,28 @@ def assemble_episode_palmier(
     spec = ChapterSpec.model_validate_json(spec_path.read_text(encoding="utf-8"))
     manifest = AssetManifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
     calibration = RegistrationCalibration.model_validate_json(calib_path.read_text(encoding="utf-8"))
+
+    # Enforce Owner Listening Approval if an audio ticket is staged
+    ticket_candidates = list(output_dir.glob("TICKET_AUDIO_*.json"))
+    approved_ticket_id = None
+    if ticket_candidates:
+        from mk_studio.audio.workflow import ListeningApprovalTicket, compile_palmier_cues_from_approval
+        ticket_data = json.loads(ticket_candidates[0].read_text(encoding="utf-8"))
+        ticket = ListeningApprovalTicket.model_validate(ticket_data)
+        if ticket.status != "approved":
+            raise ValueError(
+                f"Listening approval required: Ticket '{ticket.ticket_id}' status is '{ticket.status}'. "
+                f"Owner must listen and approve audio review ticket before Palmier compilation."
+            )
+        approved_ticket_id = ticket.ticket_id
+        # Inject approved cues and audio asset into the chapter spec and manifest
+        approved_cues = compile_palmier_cues_from_approval(ticket)
+        spec.cues = approved_cues
+        spec_path.write_text(spec.model_dump_json(indent=2) + "\n", encoding="utf-8")
+        if "audio_ep03_master" in manifest.assets:
+            manifest.assets["audio_ep03_master"].path = ticket.audio_intake.file_path
+            manifest.assets["audio_ep03_master"].sha256 = ticket.audio_sha256
+            manifest_path.write_text(manifest.model_dump_json(indent=2) + "\n", encoding="utf-8")
 
     plan = compile_scene(spec, manifest, calibration)
     plan_path = output_dir / "timeline_plan_ep03.json"
@@ -801,6 +836,7 @@ def assemble_episode_palmier(
         "step": "step_7_palmier_editing",
         "episode_id": episode_id,
         "status": "completed",
+        "listening_approval_ticket": approved_ticket_id,
         "plan_path": str(plan_path),
         "plan_sha256": compute_sha256(plan_path),
         "project_path": str(project_path),

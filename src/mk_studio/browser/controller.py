@@ -1173,16 +1173,23 @@ class BrowserController:
         self,
         prompt: str,
         *,
+        file_path: str | Path | None = None,
         conversation_url: str | None = None,
         conversation_id: str | None = None,
         screenshot_name: str = "manus_web_capture.png",
         timeout_seconds: float = 90.0,
     ) -> dict[str, Any]:
-        """Submit a specialist task on https://manus.im/app in the managed Chrome browser and read the completed response or detect a sign-in gate."""
+        """Submit a specialist task on https://manus.im/app in the managed Chrome browser, optionally attaching a file, and read the response."""
         self._require_not_in_takeover()
         target_url = conversation_url or "https://manus.im/app"
         self.open_url(target_url, conversation_id=conversation_id, wait_seconds=12.0)
         time.sleep(3.0)
+
+        attached_file_str = None
+        file_attached = False
+        if file_path:
+            p = Path(file_path).expanduser().resolve(strict=True)
+            attached_file_str = str(p)
 
         target = self._get_or_create_page_target()
         ws_url = str(target["webSocketDebuggerUrl"])
@@ -1192,6 +1199,35 @@ class BrowserController:
             ws.call("Runtime.enable")
             ws.call("Page.enable")
             ws.call("Page.bringToFront")
+
+            if attached_file_str:
+                try:
+                    ws.call("DOM.enable")
+                    doc = ws.call("DOM.getDocument", {"depth": -1})
+                    root_node_id = int((doc.get("root") or {}).get("nodeId") or 1)
+                    q_res = ws.call(
+                        "DOM.querySelector",
+                        {"nodeId": root_node_id, "selector": "input[type='file']"},
+                    )
+                    file_node_id = int(q_res.get("nodeId") or 0)
+                    if file_node_id > 0:
+                        ws.call("DOM.setFileInputFiles", {"nodeId": file_node_id, "files": [attached_file_str]})
+                        ws.call(
+                            "Runtime.evaluate",
+                            {
+                                "expression": """
+                                (() => {
+                                    const el = document.querySelector("input[type='file']");
+                                    if (el) el.dispatchEvent(new Event('change', {bubbles: true}));
+                                    return true;
+                                })()
+                                """
+                            },
+                        )
+                        file_attached = True
+                        time.sleep(1.0)
+                except Exception:
+                    pass
 
             before_ev = ws.call(
                 "Runtime.evaluate",
@@ -1341,6 +1377,8 @@ class BrowserController:
             "authenticated": not login_gate_detected and bool(final_text),
             "prompt_submitted": bool(insert_info.get("ok")),
             "prompt_saved_on_site": login_gate_detected,
+            "file_attached": file_attached,
+            "attached_file": attached_file_str,
             "url": live_url,
             "title": str(dom.get("title") or "Manus"),
             "prompt": prompt,

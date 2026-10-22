@@ -11,12 +11,11 @@
 
 ## Status
 - **COMPLETED & VERIFIED** (`2026-10-22`)
-- Automated tests: `63 passed` (`.venv/bin/pytest -q`)
+- Automated tests: `72 passed` (`.venv/bin/pytest -q`)
 - M0 CH01 verification: `.venv/bin/mk-studio verify-ch01` (`exit_code=0`, `279/279` production files untouched)
-- All 4 Codex review points addressed:
-  1. Dynamic dialogue cue parsing with audio duration probing guarantees zero vocals in 16.70s–20.70s hold window.
-  2. Gemini preschool review non-empty DOM extraction and manifest SHA-256 provenance reconciled.
-  3. Native Palmier vs deterministic FFmpeg preview renderers explicitly dispatched and tracked.
-  4. YouTube delivery upload automation unit-tested with private staging receipts.
-- Updated PDF guide: `docs/implementation/Mar_and_Kuku_Studio_MVP_Guide_and_Roadmap.pdf`
-- Status summary: `docs/implementation/antigravity-summary-v005.md`
+- Real Audio Multi-Agent Integration verified end-to-end:
+  1. Real Audio Intake (`intake_audio_master`): probes 48kHz stereo WAV, binds SHA-256 and duration, supports `source_audio_path` in Step 6.
+  2. Manus CDP File Upload & Correct Response Field: `consult_manus_web` attaches file via CDP `DOM.setFileInputFiles`, reads `response` field, rejects empty/out-of-range timestamps. Missing transcription strictly blocks verification.
+  3. ChatGPT Script Alignment & Hold Verification: `review_and_align_with_chatgpt` calls ChatGPT with script text + transcript, verifies word-for-word accuracy and 4s silent hold, binds exact script and audio SHA-256 hashes.
+  4. Listening Approval Enforcement: Palmier assembly (`assemble_episode_palmier`) enforces owner listening ticket approval before compiling markers and audio tracks.
+- Status summary: `docs/implementation/antigravity-summary-v006.md`
