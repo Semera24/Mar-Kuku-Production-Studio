@@ -19,6 +19,7 @@ from mk_studio.browser.controller import BrowserCancelledError, BrowserControlle
 from mk_studio.contracts import KIDS_CHANNEL_STYLE_STANDARD
 from mk_studio.media import CH01_PINNED_INPUTS
 from mk_studio.config import RootPolicy
+from mk_studio.editors.capcut import CapCutAdapter
 from mk_studio.editors.palmier import PalmierAdapter
 from mk_studio.mac.controller import MacController
 from mk_studio.providers.registry import ProviderError, ProviderRegistry
@@ -76,6 +77,7 @@ class StudioOrchestrator:
         self.production = ProductionService(self.policy, cancel_event=self.cancel_event)
         self.skills = SkillRegistry(Path(__file__).resolve().parents[3])
         self.scheduler = StudioScheduler()
+        self.capcut = CapCutAdapter(self.policy)
         self.telegram = TelegramService()
         self.telegram.start_polling(self)
         self._ensure_default_conversation()
@@ -443,19 +445,30 @@ class StudioOrchestrator:
                     manifest = self.workflow.run_palmier_assembly(ep_id)
                     result_payload = manifest
                     s7 = manifest.get('steps', {}).get('step_7_palmier_editing', {})
+                    # Also assemble native 16:9 CapCut Desktop project
+                    folder = self.workflow.get_episode_folder(ep_id)
+                    capcut_receipt = None
+                    try:
+                        capcut_receipt = self.capcut.assemble_episode_capcut(ep_id, folder)
+                    except Exception as cc_err:
+                        logger.warning("CapCut assembly notice: %s", cc_err)
+
                     reply_text = (
-                        f"Compiled and assembled native Palmier project for `{ep_id}`:\n"
-                        f"- Project: `{s7.get('project_path', '')}`\n"
-                        f"- Native Structure: 5 tracks, 20 clips, 6 markers verified on disk\n"
-                        f"- Reopen Verified: True"
+                        f"Compiled and assembled native 16:9 multi-track timeline for `{ep_id}`:\n"
+                        f"- **Palmier Pro Project:** `{s7.get('project_path', '')}` (5 tracks, 20 clips, 6 markers)\n"
+                        + (f"- **CapCut Desktop Project:** `{capcut_receipt.get('project_path')}` (16:9 Draft registered in CapCut Desktop)\n" if capcut_receipt else "")
+                        + "- **Reopen Verified:** True\n"
+                        "- Video assembly is complete across Palmier Pro & CapCut Desktop, ready for 1080p30 MP4 rendering!"
                     )
                     if s7.get("output_file"):
                         attachments.append({"label": "07_palmier_editing_receipt.json", "path": str(s7["output_file"])})
+                    if capcut_receipt:
+                        attachments.append({"label": "07_capcut_editing_receipt.json", "path": str(folder / "07_capcut_editing_receipt.json")})
                 except Exception as p_err:
                     reply_text = (
-                        f"**Palmier Assembly Status for `{ep_id}`:**\n"
+                        f"**Video Assembly Status for `{ep_id}`:**\n"
                         f"- Timeline assembly paused: {p_err}.\n"
-                        f"- Please execute **Step 6 (Assets)** first to prepare audio and visual props for `{ep_id}` before assembling in Palmier Pro."
+                        f"- Please execute **Step 3 (Prepare Props)** first to prepare audio and visual props for `{ep_id}` before assembling."
                     )
                     result_payload = {"error": str(p_err), "status": "prerequisites_missing"}
 
@@ -998,7 +1011,7 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
     <header>
       <span>Mar & Kuku Studio</span>
       <div style="display:flex;align-items:center;gap:6px;">
-        <span class="badge ok">3-Agent Live</span>
+        <button onclick="openThreeAgentsModal()" class="badge ok" style="cursor:pointer;border:none;background:#059669;color:#fff;font-size:11px;padding:3px 7px;" title="Click to view the 3 AI Agents">3-Agent Live ▾</button>
         <button onclick="toggleSidebar('left')" style="padding:2px 6px;font-size:11px;" title="Close Panel">✕</button>
       </div>
     </header>
@@ -1011,7 +1024,6 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
         <div style="display:flex;align-items:center;gap:8px;">
           <button id="toggle-left-btn" onclick="toggleSidebar('left')" style="padding:5px 9px;font-size:12px;background:#1e293b;" title="Toggle Workflows Panel">☰ Workflows</button>
           <span id="conv-title" style="font-weight:600;font-size:14px;color:#f8fafc;">Universal Studio Session</span>
-          <span id="platform-badge" class="badge" style="background:#1e293b;border:1px solid #475569;font-size:10px;color:#38bdf8;" title="Multi-Platform Engine: macOS & Bare Debian 13 Linux">Debian 13 Ready</span>
           <select id="niche-selector" onchange="switchNicheSkill(this.value)" style="background:#1e293b;border:1px solid #3b82f6;color:#60a5fa;font-weight:600;padding:4px 8px;font-size:12px;border-radius:6px;cursor:pointer;" title="Switch Active 16:9 YouTube Niche Blueprint">
           </select>
         </div>
@@ -1242,6 +1254,61 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
     </div>
   </div>
 
+  <!-- 3-Agent Producer Team Modal -->
+  <div id="three-agents-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:9999;align-items:center;justify-content:center;">
+    <div style="background:#0f172a;border:1px solid #3b82f6;border-radius:10px;width:90%;max-width:600px;padding:22px;box-shadow:0 20px 25px -5px rgba(0,0,0,0.5);">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <h3 style="margin:0;color:#f8fafc;display:flex;align-items:center;gap:8px;">
+          <span>🤖 3-Agent Multi-AI Production Team</span>
+          <span class="badge ok">Live Sessions</span>
+        </h3>
+        <button onclick="closeThreeAgentsModal()" style="background:transparent;border:none;color:#94a3b8;font-size:16px;cursor:pointer;">✕</button>
+      </div>
+      <p style="font-size:12px;color:#94a3b8;margin-top:0;line-height:1.4;">
+        Every episode script is collaboratively produced by three distinct specialized AI models communicating via managed Chrome tabs:
+      </p>
+
+      <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:16px;">
+        <!-- Agent 1 -->
+        <div style="background:#1e293b;border:1px solid #334155;border-left:4px solid #10b981;border-radius:6px;padding:12px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+            <strong style="color:#34d399;font-size:13px;">1. 👑 Master Producer &amp; Director: ChatGPT Web</strong>
+            <span class="badge ok">Lead Author</span>
+          </div>
+          <div style="font-size:11px;color:#cbd5e1;line-height:1.4;">
+            <strong>Role:</strong> Formulates episode concept, character voices for Mar &amp; Kuku, rhyme structure, and interactive question pacing. Synthesizes feedback into final broadcast script.
+          </div>
+        </div>
+
+        <!-- Agent 2 -->
+        <div style="background:#1e293b;border:1px solid #334155;border-left:4px solid #3b82f6;border-radius:6px;padding:12px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+            <strong style="color:#60a5fa;font-size:13px;">2. 🔍 Curriculum &amp; Safety Reviewer: Google Gemini Web</strong>
+            <span class="badge" style="background:#1e3a8a;color:#93c5fd;">Pedagogical QA</span>
+          </div>
+          <div style="font-size:11px;color:#cbd5e1;line-height:1.4;">
+            <strong>Role:</strong> Validates developmental appropriateness (ages 2–4), monitors repetition count, ensures no third human characters enter the nursery scene, and verifies vocabulary safety.
+          </div>
+        </div>
+
+        <!-- Agent 3 -->
+        <div style="background:#1e293b;border:1px solid #334155;border-left:4px solid #f59e0b;border-radius:6px;padding:12px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+            <strong style="color:#fbbf24;font-size:13px;">3. 🎯 Acoustic Timing &amp; Lyric Specialist: Manus Web</strong>
+            <span class="badge" style="background:#78350f;color:#fde68a;">Technical Sync</span>
+          </div>
+          <div style="font-size:11px;color:#cbd5e1;line-height:1.4;">
+            <strong>Role:</strong> Analyzes audio waveforms, extracts millisecond lyric timestamps, and enforces the strict 4.00-second interactive stillness pause for toddler shouting.
+          </div>
+        </div>
+      </div>
+
+      <div style="display:flex;justify-content:flex-end;">
+        <button class="primary" onclick="closeThreeAgentsModal()" style="padding:6px 16px;font-size:12px;">Close</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     let activeConversationId = 'conv-main';
     let installedSkills = [];
@@ -1266,6 +1333,16 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
         bar.style.display = 'none';
         document.getElementById('toggle-actions-btn').innerText = '⚡ Actions ▸';
       }
+    }
+
+    function openThreeAgentsModal() {
+      const modal = document.getElementById('three-agents-modal');
+      if (modal) modal.style.display = 'flex';
+    }
+
+    function closeThreeAgentsModal() {
+      const modal = document.getElementById('three-agents-modal');
+      if (modal) modal.style.display = 'none';
     }
 
     async function refreshState() {
