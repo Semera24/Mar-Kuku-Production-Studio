@@ -23,6 +23,7 @@ from mk_studio.editors.palmier import PalmierAdapter
 from mk_studio.mac.controller import MacController
 from mk_studio.providers.registry import ProviderError, ProviderRegistry
 from mk_studio.runner import StepRunner
+from mk_studio.skills.loader import SkillRegistry
 from mk_studio.state import StateStore
 from mk_studio.studio.workflow import (
     DEFAULT_TEST_EPISODE_ID,
@@ -70,6 +71,7 @@ class StudioOrchestrator:
         self.palmier = PalmierAdapter(self.policy)
         from mk_studio.production import ProductionService
         self.production = ProductionService(self.policy, cancel_event=self.cancel_event)
+        self.skills = SkillRegistry(Path(__file__).resolve().parents[3])
         self._ensure_default_conversation()
 
     def request_stop(self) -> dict[str, Any]:
@@ -131,6 +133,9 @@ class StudioOrchestrator:
             f"- Active Mac Profile: {conv['active_mac_profile']}",
             f"- Active AI Provider: {conv['active_provider_id']}",
         ]
+        active_skill = self.skills.get_active_skill()
+        lines.append(f"- Active Niche Blueprint (Hermes Skill): {active_skill.title} (ID: {active_skill.name}, Format: {active_skill.format})")
+        lines.append(f"- Niche Blueprint Excerpt: {active_skill.instructions_md[:260].replace(chr(10), ' ')}")
         if history:
             lines.append("\nRecent Conversation Turns:")
             for m in history:
@@ -238,7 +243,33 @@ class StudioOrchestrator:
         job_status = "succeeded"
 
         try:
-            if inferred_action == "stop_workflow":
+            if user_message.strip().startswith("/learn"):
+                instruction = user_message.strip()[6:].strip()
+                if not instruction:
+                    reply_text = "To use the `/learn` command, provide an instruction, rule, or niche description. Example:\n- `/learn In Tech Explainers, always keep the opening hook under 8 seconds.`\n- `/learn Niche: Space & Astronomy 16:9 documentary with Neil deGrasse Tyson style narration.`"
+                else:
+                    if "niche" in instruction.lower() or "blueprint" in instruction.lower() or "channel" in instruction.lower():
+                        new_skill = self.skills.learn_new_niche_skill(instruction)
+                        reply_text = (
+                            f"✨ **Learned & Created New 16:9 Niche Blueprint:**\n\n"
+                            f"- **Title:** `{new_skill.title}`\n"
+                            f"- **Identifier:** `{new_skill.name}`\n"
+                            f"- **File:** `{new_skill.skill_file}`\n"
+                            f"- **Format:** `{new_skill.format}`\n\n"
+                            f"Switched active studio blueprint to `{new_skill.name}`. All subsequent 16:9 scripts and timeline assembly will follow this blueprint."
+                        )
+                        self.skills.set_active_skill(new_skill.name)
+                    else:
+                        self.skills.memory.append_learned_rule(instruction)
+                        reply_text = (
+                            f"🧠 **Learned & Persisted New Production Rule:**\n\n"
+                            f"- *Rule:* \"{instruction}\"\n"
+                            f"- *Saved to:* `data/memory/memory.md`\n"
+                            f"- The studio will automatically apply this rule across all future episodes."
+                        )
+                result_payload = {"learned": True, "instruction": instruction}
+
+            elif inferred_action == "stop_workflow":
                 stop_info = self.request_stop()
                 result_payload = stop_info
                 reply_text = (
@@ -920,7 +951,9 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
       <div style="display:flex;justify-content:space-between;align-items:center;width:100%;flex-wrap:wrap;gap:8px;">
         <div style="display:flex;align-items:center;gap:8px;">
           <button id="toggle-left-btn" onclick="toggleSidebar('left')" style="padding:5px 9px;font-size:12px;background:#1e293b;" title="Toggle Workflows Panel">☰ Workflows</button>
-          <span id="conv-title" style="font-weight:600;font-size:14px;color:#f8fafc;">Mar & Kuku Studio — Fresh Production Session</span>
+          <span id="conv-title" style="font-weight:600;font-size:14px;color:#f8fafc;">Universal Studio Session</span>
+          <select id="niche-selector" onchange="switchNicheSkill(this.value)" style="background:#1e293b;border:1px solid #3b82f6;color:#60a5fa;font-weight:600;padding:4px 8px;font-size:12px;border-radius:6px;cursor:pointer;" title="Switch Active 16:9 YouTube Niche Blueprint">
+          </select>
         </div>
         <div style="display:flex;align-items:center;gap:6px;">
           <button onclick="toggleActionDrawer()" id="toggle-actions-btn" style="background:#334155;font-weight:600;padding:5px 9px;font-size:12px;" title="Show/Hide Action Buttons">⚡ Actions ▾</button>
@@ -951,6 +984,7 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
       <button class="tab-btn" id="tab-btn-tracker" onclick="switchMainTab('tracker')">📋 Live Workflow Tracker</button>
       <button class="tab-btn" id="tab-btn-files" onclick="switchMainTab('files')">📁 Files &amp; Asset Explorer</button>
       <button class="tab-btn" id="tab-btn-browser" onclick="switchMainTab('browser')">🌐 Live Browser View</button>
+      <button class="tab-btn" id="tab-btn-skills" onclick="switchMainTab('skills')">🛠 Niche Blueprints &amp; Memory</button>
       <button onclick="clearChatMessages()" style="background:#dc2626;color:#fff;border:none;padding:5px 12px;font-size:12px;font-weight:600;border-radius:4px;cursor:pointer;margin-left:auto;" title="Clear conversation chat and reset session history">🗑 Clear Chat</button>
     </div>
 
@@ -1027,6 +1061,44 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
         <div id="browser-loading-spinner" style="position:absolute;top:12px;right:12px;background:rgba(0,0,0,0.75);padding:6px 12px;border-radius:4px;font-size:12px;color:#60a5fa;display:none;border:1px solid #3b82f6;">Refreshing CDP capture...</div>
       </div>
     </div>
+
+    <!-- Tab 5: Niche Blueprints & Hierarchical Memory Pane -->
+    <div id="tab-pane-skills" class="tab-pane" style="padding:16px;flex:1;min-height:0;display:none;flex-direction:column;">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;background:var(--panel);padding:14px 18px;border-radius:8px;border:1px solid var(--border);margin-bottom:16px;">
+        <div>
+          <h3 style="margin:0;font-size:16px;color:#f8fafc;display:flex;align-items:center;gap:8px;">
+            <span>🛠 Universal Niche Blueprints &amp; Memory (Hermes Skills)</span>
+            <span id="active-niche-badge" class="badge ok">16:9 Standard</span>
+          </h3>
+          <span style="font-size:12px;color:#94a3b8;" id="active-niche-desc">Modular skills architecture: produce videos for any 16:9 YouTube niche with zero code modifications.</span>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <button class="primary" onclick="openLearnPrompt()" style="font-weight:600;">✨ Learn New Niche (/learn)</button>
+          <button onclick="refreshSkills()" style="background:#334155;">🔄 Refresh Blueprints</button>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(320px, 1fr));gap:14px;margin-bottom:18px;" id="skills-catalog-grid">
+        <!-- Rendered dynamically -->
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
+        <div class="card" style="background:var(--panel);">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+            <strong style="color:#60a5fa;">👤 Operator Profile (`user.md`)</strong>
+            <span style="font-size:11px;color:#94a3b8;">Global Preferences</span>
+          </div>
+          <pre id="user-profile-view" style="font-size:12px;color:#cbd5e1;background:#0b1120;padding:10px;border-radius:6px;max-height:220px;overflow-y:auto;white-space:pre-wrap;margin:0;"></pre>
+        </div>
+        <div class="card" style="background:var(--panel);">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+            <strong style="color:#34d399;">🧠 Cross-Session Working Memory (`memory.md`)</strong>
+            <button onclick="promptAddRule()" style="font-size:11px;padding:3px 8px;background:#059669;color:#fff;border-radius:4px;border:none;cursor:pointer;">+ Add Rule</button>
+          </div>
+          <pre id="working-memory-view" style="font-size:12px;color:#cbd5e1;background:#0b1120;padding:10px;border-radius:6px;max-height:220px;overflow-y:auto;white-space:pre-wrap;margin:0;"></pre>
+        </div>
+      </div>
+    </div>
   </main>
 
   <aside id="right-aside" style="border-right:none;">
@@ -1074,6 +1146,21 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
       const wfSteps = wf.steps || {};
       document.getElementById('conv-title').innerText = conv.title || activeConversationId;
       document.getElementById('provider-select').value = conv.active_provider_id || 'codex_cli';
+
+      if (data.active_skill) {
+        currentActiveSkill = data.active_skill;
+      }
+      if (data.skills && data.skills.length) {
+        installedSkills = data.skills;
+        const selector = document.getElementById('niche-selector');
+        if (selector && selector.options.length !== installedSkills.length) {
+          selector.innerHTML = installedSkills.map(s => `
+            <option value="${s.name}" ${s.name === currentActiveSkill?.name ? 'selected' : ''}>
+              🎬 ${s.title}
+            </option>
+          `).join('');
+        }
+      }
 
       const ch02Wf = data.ch02_workflow || {};
       const ch02Steps = ch02Wf.steps || {};
@@ -1248,7 +1335,109 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
         if (!browserAutoRefreshInterval) {
           toggleBrowserAutoRefresh();
         }
+      } else if (tab === 'skills') {
+        refreshSkills();
       }
+    }
+
+    let installedSkills = [];
+    let currentActiveSkill = null;
+
+    async function refreshSkills() {
+      try {
+        const res = await fetch('/api/skills');
+        const data = await res.json();
+        installedSkills = data.skills || [];
+        currentActiveSkill = data.active_skill || {};
+
+        // Update Header Dropdown
+        const selector = document.getElementById('niche-selector');
+        if (selector) {
+          selector.innerHTML = installedSkills.map(s => `
+            <option value="${s.name}" ${s.name === currentActiveSkill.name ? 'selected' : ''}>
+              🎬 ${s.title}
+            </option>
+          `).join('');
+        }
+
+        // Update Active Niche Header Badge
+        const badge = document.getElementById('active-niche-badge');
+        if (badge && currentActiveSkill.name) {
+          badge.innerText = currentActiveSkill.format || '16:9 Standard';
+        }
+
+        // Render Catalog Grid in Tab 5
+        const grid = document.getElementById('skills-catalog-grid');
+        if (grid) {
+          grid.innerHTML = installedSkills.map(s => {
+            const isActive = s.name === currentActiveSkill.name;
+            return `
+              <div class="card" style="border: 1px solid ${isActive ? '#3b82f6' : '#334155'}; background: ${isActive ? 'rgba(59, 130, 246, 0.08)' : 'var(--panel)'}; padding: 14px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+                  <strong style="color:${isActive ? '#60a5fa' : '#f8fafc'};font-size:14px;">${s.title}</strong>
+                  <span class="badge ${isActive ? 'ok' : ''}" style="${isActive ? '' : 'background:#334155;color:#94a3b8;'}">${isActive ? 'Active' : s.category}</span>
+                </div>
+                <div style="font-size:11px;color:#94a3b8;margin-bottom:8px;">
+                  Format: <code>${s.format}</code> &bull; Version: <code>${s.version}</code>
+                </div>
+                <div style="font-size:12px;color:#cbd5e1;max-height:100px;overflow-y:auto;white-space:pre-wrap;background:#0b1120;padding:8px;border-radius:4px;margin-bottom:10px;">${s.instructions_md ? s.instructions_md.slice(0, 260) + '...' : 'No instructions.'}</div>
+                <div style="display:flex;gap:6px;">
+                  ${isActive ? '<button disabled style="opacity:0.6;font-size:11px;padding:4px 10px;">Currently Active</button>' : `<button class="primary" onclick="switchNicheSkill('${s.name}')" style="font-size:11px;padding:4px 10px;">Activate Niche</button>`}
+                </div>
+              </div>
+            `;
+          }).join('');
+        }
+
+        // Update Memory Previews
+        const userView = document.getElementById('user-profile-view');
+        if (userView) userView.innerText = data.user_profile || '';
+        const memoryView = document.getElementById('working-memory-view');
+        if (memoryView) memoryView.innerText = data.working_memory || '';
+
+      } catch (err) {
+        console.error("Error refreshing skills:", err);
+      }
+    }
+
+    async function switchNicheSkill(skillName) {
+      if (!skillName) return;
+      await fetch('/api/skills', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ action: 'select', skill_name: skillName })
+      });
+      await refreshSkills();
+      await refreshState();
+    }
+
+    async function openLearnPrompt() {
+      const promptText = prompt("✨ Hermes /learn — Describe the new 16:9 YouTube niche or channel concept to synthesize:\n\nExample: 'Space & Astronomy 16:9 documentary with Neil deGrasse Tyson style deep narration and James Webb telescope imagery'");
+      if (!promptText || !promptText.trim()) return;
+      try {
+        const res = await fetch('/api/skills', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ action: 'learn', prompt: promptText.trim() })
+        });
+        const data = await res.json();
+        alert(`✨ Successfully learned and created new Niche Blueprint: ${data.skill.title}!\nSwitched active niche to: ${data.skill.name}.`);
+        await refreshSkills();
+        await refreshState();
+      } catch (err) {
+        alert("Error learning skill: " + err);
+      }
+    }
+
+    async function promptAddRule() {
+      const rule = prompt("🧠 Add a persistent production rule to memory.md:\n\nExample: 'Always keep background music at -18dB under speech'");
+      if (!rule || !rule.trim()) return;
+      await fetch('/api/skills', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ action: 'save_rule', rule: rule.trim() })
+      });
+      await refreshSkills();
     }
 
     let browserAutoRefreshInterval = null;
@@ -1330,24 +1519,28 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
         epLabel.innerText = 'Active: ' + activeEpId;
       }
 
+      const activeSkillTitle = currentActiveSkill ? currentActiveSkill.title : 'Mar & Kuku - Toddler & Preschool Learning';
+      const activeSkillFormat = currentActiveSkill ? currentActiveSkill.format : '16:9 (1920x1080 @ 30fps)';
+      const activeSkillCategory = currentActiveSkill ? currentActiveSkill.category : 'kids_preschool';
+
       const styleCardHtml = `
         <div class="card" style="background:#0f172a;border:1px solid #3b82f6;margin-bottom:14px;padding:12px 16px;">
           <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
             <div>
-              <h4 style="margin:0;font-size:14px;color:#60a5fa;">🐣 Kids Channel Standards — Mar &amp; Kuku (mar-kuku-kids)</h4>
-              <span style="font-size:12px;color:#94a3b8;">Target Age: <b>2–4 Years (Toddlers)</b> | Cast: <b>Mar (Gentle Host ~100wpm)</b> &amp; <b>Kuku (Cute Baby Chick Chirps)</b></span>
+              <h4 style="margin:0;font-size:14px;color:#60a5fa;">🎬 Active 16:9 Niche Blueprint: ${activeSkillTitle}</h4>
+              <span style="font-size:12px;color:#94a3b8;">Format: <b>${activeSkillFormat}</b> | Category: <b>${activeSkillCategory}</b></span>
             </div>
-            <span class="badge ok">Style Enforced</span>
+            <span class="badge ok">16:9 Standard Enforced</span>
           </div>
           <div style="display:flex;gap:10px;margin-top:10px;font-size:12px;color:#cbd5e1;flex-wrap:wrap;">
             <div style="background:#1e293b;padding:6px 10px;border-radius:4px;border:1px solid #334155;">
-              ⏱ <b>Interactive Hold:</b> 4.00s (120 frames @ 30fps)
+              📐 <b>Canvas Aspect:</b> 16:9 Widescreen (1920x1080 / 4K)
             </div>
             <div style="background:#1e293b;padding:6px 10px;border-radius:4px;border:1px solid #334155;">
-              🎵 <b>Music Tempo:</b> 118–124 bpm acoustic rhythm (48kHz Stereo)
+              🎵 <b>Master Audio:</b> 48,000Hz, 16-bit, 2-Ch Stereo WAV
             </div>
             <div style="background:#1e293b;padding:6px 10px;border-radius:4px;border:1px solid #334155;">
-              🎨 <b>Visual Props:</b> 1254x1254 transparent PNGs
+              🛠 <b>Blueprint:</b> ${currentActiveSkill ? currentActiveSkill.name : 'mar-kuku-kids'}
             </div>
           </div>
         </div>
@@ -1355,7 +1548,7 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
           <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
             <div>
               <h4 style="margin:0;font-size:14px;color:#34d399;">📦 Master Episode Archive &amp; Post-Publish Lifecycle</h4>
-              <span style="font-size:12px;color:#94a3b8;">Preserve permanent master records in SQLite &amp; DoroNesh library; clean working scratch takes.</span>
+              <span style="font-size:12px;color:#94a3b8;">Preserve permanent master records in SQLite &amp; library; clean working scratch clutter.</span>
             </div>
             <button class="primary" onclick="archiveCurrentEpisode('${activeEpId}')" style="background:#059669;border-color:#059669;font-weight:600;">📦 Publish &amp; Archive Episode</button>
           </div>
@@ -1554,6 +1747,7 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
     }
 
     refreshState();
+    refreshSkills();
   </script>
 </body>
 </html>
@@ -1721,6 +1915,10 @@ def create_studio_app(policy: RootPolicy | None = None) -> Starlette:
                 "cancel_event_set": orchestrator.cancel_event.is_set(),
                 "episode_memories": orchestrator.store.list_episode_memories(),
                 "kids_channel_standard": KIDS_CHANNEL_STYLE_STANDARD,
+                "active_skill": orchestrator.skills.get_active_skill().to_dict(),
+                "skills": [s.to_dict() for s in orchestrator.skills.list_skills()],
+                "user_profile": orchestrator.skills.memory.get_user_profile(),
+                "working_memory": orchestrator.skills.memory.get_working_memory(),
             }
         )
 
@@ -1945,6 +2143,34 @@ def create_studio_app(policy: RootPolicy | None = None) -> Starlette:
             )
             return JSONResponse({"status": "saved", "episode_memory": saved})
 
+    async def api_skills(request: Request) -> JSONResponse:
+        if request.method == "GET":
+            active = orchestrator.skills.get_active_skill()
+            skills_list = [s.to_dict() for s in orchestrator.skills.list_skills()]
+            return JSONResponse({
+                "active_skill": active.to_dict(),
+                "skills": skills_list,
+                "user_profile": orchestrator.skills.memory.get_user_profile(),
+                "working_memory": orchestrator.skills.memory.get_working_memory(),
+            })
+        elif request.method == "POST":
+            body = await request.json()
+            action = body.get("action")
+            if action == "select":
+                name = str(body.get("skill_name") or "")
+                skill = orchestrator.skills.set_active_skill(name)
+                return JSONResponse({"status": "selected", "active_skill": skill.to_dict()})
+            elif action == "learn":
+                prompt = str(body.get("prompt") or "")
+                new_skill = orchestrator.skills.learn_new_niche_skill(prompt)
+                orchestrator.skills.set_active_skill(new_skill.name)
+                return JSONResponse({"status": "learned", "skill": new_skill.to_dict()})
+            elif action == "save_rule":
+                rule = str(body.get("rule") or "")
+                orchestrator.skills.memory.append_learned_rule(rule)
+                return JSONResponse({"status": "rule_saved", "rule": rule})
+            return JSONResponse({"error": "Unknown action"}, status_code=400)
+
     app = Starlette(
         routes=[
             Route("/", index_page, methods=["GET"]),
@@ -1955,6 +2181,7 @@ def create_studio_app(policy: RootPolicy | None = None) -> Starlette:
             Route("/api/browser/takeover", api_browser_takeover, methods=["POST"]),
             Route("/api/browser/preview", api_browser_preview, methods=["GET"]),
             Route("/api/browser/focus", api_browser_focus, methods=["POST"]),
+            Route("/api/skills", api_skills, methods=["GET", "POST"]),
             Route("/api/episode/memory", api_episode_memory, methods=["GET", "POST"]),
             Route("/api/episode/archive", api_episode_archive, methods=["POST"]),
             Route("/api/audio", api_audio, methods=["GET"]),
