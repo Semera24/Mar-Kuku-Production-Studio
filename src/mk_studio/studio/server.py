@@ -384,17 +384,25 @@ class StudioOrchestrator:
                 attachments.extend(repair_res.get("attachments", []))
 
             elif inferred_action == "assemble_palmier":
-                manifest = self.workflow.run_palmier_assembly(ep_id)
-                result_payload = manifest
-                s7 = manifest.get('steps', {}).get('step_7_palmier_editing', {})
-                reply_text = (
-                    f"Compiled and assembled native Palmier project for `{ep_id}`:\n"
-                    f"- Project: `{s7.get('project_path', '')}`\n"
-                    f"- Native Structure: 5 tracks, 20 clips, 6 markers verified on disk\n"
-                    f"- Reopen Verified: True"
-                )
-                if s7.get("output_file"):
-                    attachments.append({"label": "07_palmier_editing_receipt.json", "path": str(s7["output_file"])})
+                try:
+                    manifest = self.workflow.run_palmier_assembly(ep_id)
+                    result_payload = manifest
+                    s7 = manifest.get('steps', {}).get('step_7_palmier_editing', {})
+                    reply_text = (
+                        f"Compiled and assembled native Palmier project for `{ep_id}`:\n"
+                        f"- Project: `{s7.get('project_path', '')}`\n"
+                        f"- Native Structure: 5 tracks, 20 clips, 6 markers verified on disk\n"
+                        f"- Reopen Verified: True"
+                    )
+                    if s7.get("output_file"):
+                        attachments.append({"label": "07_palmier_editing_receipt.json", "path": str(s7["output_file"])})
+                except Exception as p_err:
+                    reply_text = (
+                        f"**Palmier Assembly Status for `{ep_id}`:**\n"
+                        f"- Timeline assembly paused: {p_err}.\n"
+                        f"- Please execute **Step 6 (Assets)** first to prepare audio and visual props for `{ep_id}` before assembling in Palmier Pro."
+                    )
+                    result_payload = {"error": str(p_err), "status": "prerequisites_missing"}
 
             elif inferred_action == "export_mp4":
                 manifest = self.workflow.run_final_mp4_export(ep_id)
@@ -681,15 +689,115 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
       background: var(--bg);
       color: var(--text);
       display: grid;
-      grid-template-columns: 340px 1fr 380px;
+      grid-template-columns: 320px 1fr 340px;
       height: 100vh;
+      min-height: 100vh;
+      overflow: hidden;
+    }
+    body.collapse-left { grid-template-columns: 0px 1fr 340px; }
+    body.collapse-right { grid-template-columns: 320px 1fr 0px; }
+    body.collapse-left.collapse-right { grid-template-columns: 0px 1fr 0px; }
+    @media (max-width: 1100px) {
+      body { grid-template-columns: 0px 1fr 0px; }
+      #left-aside { display: none; }
+      #right-aside { display: none; }
+      #left-aside.open {
+        position: fixed; left: 0; top: 0; bottom: 0; width: 320px; z-index: 100;
+        background: #0f172a; box-shadow: 4px 0 20px rgba(0,0,0,0.8); display: flex !important;
+      }
+      #right-aside.open {
+        position: fixed; right: 0; top: 0; bottom: 0; width: 340px; z-index: 100;
+        background: #0f172a; box-shadow: -4px 0 20px rgba(0,0,0,0.8); display: flex !important;
+      }
     }
     aside, main {
       display: flex;
       flex-direction: column;
       border-right: 1px solid var(--border);
       overflow: hidden;
+      min-height: 0;
     }
+    .tab-nav {
+      display: flex;
+      background: #0b1120;
+      border-bottom: 1px solid var(--border);
+      padding: 0 14px;
+      gap: 4px;
+      align-items: center;
+    }
+    .tab-btn {
+      background: transparent;
+      border: none;
+      border-bottom: 2px solid transparent;
+      border-radius: 0;
+      padding: 9px 13px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .tab-btn:hover { color: #fff; }
+    .tab-btn.active {
+      color: #60a5fa;
+      border-bottom: 2px solid #3b82f6;
+    }
+    .tab-pane {
+      display: none;
+      flex: 1;
+      overflow-y: auto;
+      min-height: 0;
+    }
+    .tab-pane.active {
+      display: flex;
+      flex-direction: column;
+    }
+    .tracker-item {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px 14px;
+      margin-bottom: 10px;
+      display: flex;
+      gap: 12px;
+      align-items: center;
+    }
+    .tracker-item.done {
+      border-color: #059669;
+      background: rgba(16, 185, 129, 0.08);
+    }
+    .tracker-icon {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: bold;
+      background: #334155;
+      color: #94a3b8;
+      font-size: 14px;
+      flex-shrink: 0;
+    }
+    .tracker-item.done .tracker-icon {
+      background: #059669;
+      color: #fff;
+    }
+    .file-box {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 12px;
+    }
+    .file-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 10px;
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+      font-size: 12px;
+    }
+    .file-row:last-child { border-bottom: none; }
     header {
       padding: 12px 14px;
       border-bottom: 1px solid var(--border);
@@ -776,65 +884,140 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
   </style>
 </head>
 <body>
-  <aside>
+  <aside id="left-aside">
     <header>
       <span>Mar & Kuku Studio</span>
-      <span class="badge ok">3-Agent Live</span>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <span class="badge ok">3-Agent Live</span>
+        <button onclick="toggleSidebar('left')" style="padding:2px 6px;font-size:11px;" title="Close Panel">✕</button>
+      </div>
     </header>
     <div class="scroll" id="left-panel"></div>
   </aside>
 
   <main>
-    <header>
-      <span id="conv-title">Episode 002 / CH01 — Studio Chat</span>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;">
-        <button class="primary" onclick="triggerAction('continue_ch02_audio')">Resume CH02 Audio</button>
-        <button onclick="triggerRepairPrompt()">Approve & Trim 4s</button>
-        <button onclick="triggerAction('consult_three_agents')">1-4: 3-Agent Script</button>
-        <button onclick="triggerAction('generate_assets')">6: Assets</button>
-        <button onclick="triggerAction('assemble_palmier')">7: Palmier</button>
-        <button onclick="triggerAction('export_mp4')">8: MP4 Export</button>
-        <button onclick="triggerAction('stage_youtube')">9: YouTube</button>
-        <button class="primary" onclick="triggerAction('full_pipeline')">Full Pipeline (6-9)</button>
+    <header style="display:flex;flex-direction:column;gap:8px;padding:10px 14px;background:#0b1120;border-bottom:1px solid var(--border);">
+      <div style="display:flex;justify-content:space-between;align-items:center;width:100%;flex-wrap:wrap;gap:8px;">
+        <div style="display:flex;align-items:center;gap:8px;">
+          <button id="toggle-left-btn" onclick="toggleSidebar('left')" style="padding:5px 9px;font-size:12px;background:#1e293b;" title="Toggle Workflows Panel">☰ Workflows</button>
+          <span id="conv-title" style="font-weight:600;font-size:14px;color:#f8fafc;">Mar & Kuku Studio — Fresh Production Session</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;">
+          <button onclick="toggleActionDrawer()" id="toggle-actions-btn" style="background:#334155;font-weight:600;padding:5px 9px;font-size:12px;" title="Show/Hide Action Buttons">⚡ Actions ▾</button>
+          <button id="toggle-right-btn" onclick="toggleSidebar('right')" style="padding:5px 9px;font-size:12px;background:#1e293b;" title="Toggle Telemetry Panel">📊 Telemetry</button>
+        </div>
+      </div>
+      <div id="action-buttons-bar" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;width:100%;">
+        <span style="font-size:11px;color:#94a3b8;font-weight:600;margin-right:2px;">PROD:</span>
+        <button onclick="triggerAction('consult_three_agents')" title="ChatGPT (Master) -> Gemini (Reviewer) -> Manus (Specialist)">1-4: 3-Agent Script</button>
+        <button onclick="triggerAction('generate_assets')" title="Generate & intake voiceover, props & thumbnail">6: Assets</button>
+        <button onclick="triggerAction('assemble_palmier')" title="Assemble multi-track timeline in Palmier Pro">7: Palmier</button>
+        <button onclick="triggerAction('export_mp4')" title="Export 1080p30 MP4 and run QA">8: MP4 Export</button>
+        <button onclick="triggerAction('stage_youtube')" title="Stage video & metadata package for YouTube Studio">9: YouTube</button>
+        <button class="primary" onclick="triggerAction('full_pipeline')" title="Run full automated sequence from Script to YouTube staging">Full Pipeline (6-9)</button>
+        <span style="font-size:11px;color:#94a3b8;font-weight:600;margin:0 2px 0 6px;">CONTROLS:</span>
         <button onclick="triggerAction('resume_workflow')">Resume</button>
-        <button onclick="triggerAction('verify_ch01')">Verify CH01</button>
-        <button onclick="triggerAction('mac_inspect')">Inspect Mac</button>
-        <button onclick="triggerAction('browser_demo')">Sandbox Fixture</button>
         <button class="danger" onclick="stopAll()">Stop</button>
+        <span style="font-size:11px;color:#94a3b8;font-weight:600;margin:0 2px 0 6px;">TOOLS:</span>
+        <button onclick="triggerAction('continue_ch02_audio')" title="Inspect historical CH02 audio work">Resume CH02 Audio</button>
+        <button onclick="triggerRepairPrompt()" title="Execute audio repair on Candidate B">Approve & Trim 4s</button>
+        <button onclick="triggerAction('verify_ch01')" title="Run Chapter 01 technical regression verification">Verify CH01</button>
+        <button onclick="triggerAction('mac_inspect')" title="Audit Mac desktop and permissions">Inspect Mac</button>
+        <button onclick="triggerAction('browser_demo')" title="Test local offline browser fixture">Sandbox Fixture</button>
       </div>
     </header>
-    <div class="scroll" id="chat-messages"></div>
-    <div class="composer">
-      <textarea id="chat-input" placeholder="Type e.g. 'Research the next Mar and Kuku episode, consult Gemini and Manus, and save the proposed script.' or a follow-up correction..."></textarea>
-      <div class="composer-row">
-        <select id="provider-select">
-          <option value="chatgpt_web">ChatGPT Web Session (Master)</option>
-          <option value="gemini_web">Google Gemini Web Session (Reviewer)</option>
-          <option value="manus_web">Manus Web Session (Specialist)</option>
-          <option value="codex_cli">OpenAI Codex CLI (Local)</option>
-          <option value="openai_api">OpenAI REST API (Keychain)</option>
-          <option value="browser_web_ai">Local Sandbox Fixture (/browser-sandbox)</option>
-        </select>
-        <button class="primary" id="send-btn" onclick="sendChat()">Send Message</button>
+    <div class="tab-nav">
+      <button class="tab-btn active" id="tab-btn-chat" onclick="switchMainTab('chat')">💬 Production Chat</button>
+      <button class="tab-btn" id="tab-btn-tracker" onclick="switchMainTab('tracker')">📋 Live Workflow Tracker</button>
+      <button class="tab-btn" id="tab-btn-files" onclick="switchMainTab('files')">📁 Files &amp; Asset Explorer</button>
+      <button onclick="clearChatMessages()" style="background:#dc2626;color:#fff;border:none;padding:5px 12px;font-size:12px;font-weight:600;border-radius:4px;cursor:pointer;margin-left:auto;" title="Clear conversation chat and reset session history">🗑 Clear Chat</button>
+    </div>
+
+    <!-- Tab 1: Chat Pane -->
+    <div id="tab-pane-chat" class="tab-pane active">
+      <div class="scroll" id="chat-messages"></div>
+      <div class="composer">
+        <textarea id="chat-input" placeholder="Type e.g. 'Execute episode workflow from WorkingFlowTracker/EP03_SWEET_FRUIT_BASKET.md' or prompt..."></textarea>
+        <div class="composer-row">
+          <select id="provider-select">
+            <option value="chatgpt_web">ChatGPT Web Session (Master)</option>
+            <option value="gemini_web">Google Gemini Web Session (Reviewer)</option>
+            <option value="manus_web">Manus Web Session (Specialist)</option>
+            <option value="codex_cli">OpenAI Codex CLI (Local)</option>
+            <option value="openai_api">OpenAI REST API (Keychain)</option>
+            <option value="browser_web_ai">Local Sandbox Fixture (/browser-sandbox)</option>
+          </select>
+          <button class="primary" id="send-btn" onclick="sendChat()">Send Message</button>
+        </div>
       </div>
+    </div>
+
+    <!-- Tab 2: Live Workflow Tracker Pane -->
+    <div id="tab-pane-tracker" class="tab-pane" style="padding:16px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+        <div>
+          <h3 style="margin:0;font-size:16px;color:#f8fafc;">Episode Production Tracker</h3>
+          <span style="font-size:12px;color:#94a3b8;" id="tracker-episode-label">Active: EP03_SWEET_FRUIT_BASKET</span>
+        </div>
+        <button onclick="refreshState()" style="font-size:12px;">Refresh Tracker</button>
+      </div>
+      <div id="tracker-steps-container"></div>
+    </div>
+
+    <!-- Tab 3: Files & Asset Explorer Pane -->
+    <div id="tab-pane-files" class="tab-pane" style="padding:16px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+        <div>
+          <h3 style="margin:0;font-size:16px;color:#f8fafc;">DoroNesh Library &amp; Working Files</h3>
+          <span style="font-size:12px;color:#94a3b8;">Direct browser media players, prop previews, and script viewers</span>
+        </div>
+        <button onclick="loadFilesExplorer()" style="font-size:12px;">Refresh Files</button>
+      </div>
+      <div id="files-explorer-container"></div>
     </div>
   </main>
 
-  <aside style="border-right:none;">
+  <aside id="right-aside" style="border-right:none;">
     <header>
       <span>Live Browser & Telemetry</span>
-      <button onclick="refreshState()">Refresh</button>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <button onclick="refreshState()">Refresh</button>
+        <button onclick="toggleSidebar('right')" style="padding:2px 6px;font-size:11px;" title="Close Panel">✕</button>
+      </div>
     </header>
     <div class="scroll" id="right-panel"></div>
   </aside>
 
   <script>
-    let activeConversationId = 'conv-e02-ch01-main';
+    let activeConversationId = 'conv-main';
+
+    function toggleSidebar(side) {
+      const el = document.getElementById(side + '-aside');
+      if (window.innerWidth <= 1100) {
+        el.classList.toggle('open');
+      } else {
+        document.body.classList.toggle('collapse-' + side);
+      }
+    }
+
+    function toggleActionDrawer() {
+      const bar = document.getElementById('action-buttons-bar');
+      if (bar.style.display === 'none') {
+        bar.style.display = 'flex';
+        document.getElementById('toggle-actions-btn').innerText = '⚡ Actions ▾';
+      } else {
+        bar.style.display = 'none';
+        document.getElementById('toggle-actions-btn').innerText = '⚡ Actions ▸';
+      }
+    }
 
     async function refreshState() {
       const res = await fetch(`/api/state?conversation_id=${encodeURIComponent(activeConversationId)}`);
       const data = await res.json();
       const conv = data.conversation || {};
+      if (conv.conversation_id) {
+        activeConversationId = conv.conversation_id;
+      }
       const wf = data.workflow || {};
       const wfSteps = wf.steps || {};
       document.getElementById('conv-title').innerText = conv.title || activeConversationId;
@@ -843,7 +1026,7 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
       const ch02Wf = data.ch02_workflow || {};
       const ch02Steps = ch02Wf.steps || {};
       const ch02Html = ch02Wf.steps ? `
-        <div class="card" style="border-color:#3b82f6;">
+        <div class="card" style="border-color:#3b82f6;margin-bottom:8px;">
           <div style="display:flex;justify-content:space-between;align-items:center;">
             <strong style="color:#60a5fa;">CH02 Audio Pipeline</strong>
             <span class="badge ${ch02Wf.status === 'completed' ? 'ok' : 'warn'}">${ch02Wf.status || 'in_progress'}</span>
@@ -857,18 +1040,57 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
         </div>
       ` : '';
 
-      const leftHtml = `
-        ${ch02Html}
-        <div class="card">
-          <strong>3-Agent Script Workflow (${wf.episode_id || 'EP03_COUNTING_FLOWERS'})</strong><br/>
-          Status: <span class="badge ${wf.status === 'completed' ? 'ok' : 'warn'}">${wf.status || 'not_started'}</span>
-          Version: <code>${wf.current_script_version || '-'}</code><br/>
-          ${Object.entries(wfSteps).map(([k, v]) => `
-            <div style="margin-top:5px;padding-top:4px;border-top:1px solid #334155;font-size:12px;">
-              <b>${k}</b>: <span class="badge ${v.status === 'completed' ? 'ok' : 'warn'}">${v.status}</span> (runs: ${v.submission_count || 0})
+      const activeEp = conv.active_episode_id || '';
+      let activeWfHtml = '';
+      if (activeEp && wf.steps) {
+        activeWfHtml = `
+          <div class="card" style="border-color:#3b82f6;">
+            <strong>Active Workflow: ${wf.episode_id || activeEp}</strong><br/>
+            Status: <span class="badge ${wf.status === 'completed' ? 'ok' : 'warn'}">${wf.status || 'not_started'}</span>
+            Version: <code>${wf.current_script_version || '-'}</code><br/>
+            ${Object.entries(wfSteps).map(([k, v]) => `
+              <div style="margin-top:5px;padding-top:4px;border-top:1px solid #334155;font-size:12px;">
+                <b>${k}</b>: <span class="badge ${v.status === 'completed' ? 'ok' : 'warn'}">${v.status}</span> (runs: ${v.submission_count || 0})
+              </div>
+            `).join('')}
+          </div>
+        `;
+      } else {
+        activeWfHtml = `
+          <div class="card" style="border: 1px dashed #3b82f6; background: rgba(59, 130, 246, 0.08);">
+            <strong style="color:#60a5fa;">✨ Clean Production Workspace</strong><br/>
+            <span style="font-size:12px;color:#94a3b8;">No active episode running. Type an instruction in chat or reference <code>WorkingFlowTracker/</code> to begin.</span>
+          </div>
+        `;
+      }
+
+      let archiveHtml = '';
+      if (ch02Wf.steps || (wf.steps && !activeEp)) {
+        archiveHtml = `
+          <details class="card" style="background:#0b1120;border:1px solid #334155;cursor:pointer;padding:8px 10px;">
+            <summary style="font-weight:600;font-size:12px;color:#94a3b8;">📁 Historical Workflows Archive</summary>
+            <div style="margin-top:10px;">
+              ${ch02Html}
+              ${(!activeEp && wf.steps) ? `
+                <div class="card" style="margin-top:8px;">
+                  <strong>3-Agent Script Workflow (${wf.episode_id || 'EP03_COUNTING_FLOWERS'})</strong><br/>
+                  Status: <span class="badge ${wf.status === 'completed' ? 'ok' : 'warn'}">${wf.status || 'not_started'}</span>
+                  Version: <code>${wf.current_script_version || '-'}</code><br/>
+                  ${Object.entries(wfSteps).map(([k, v]) => `
+                    <div style="margin-top:5px;padding-top:4px;border-top:1px solid #334155;font-size:12px;">
+                      <b>${k}</b>: <span class="badge ${v.status === 'completed' ? 'ok' : 'warn'}">${v.status}</span>
+                    </div>
+                  `).join('')}
+                </div>
+              ` : ''}
             </div>
-          `).join('')}
-        </div>
+          </details>
+        `;
+      }
+
+      const leftHtml = `
+        ${activeWfHtml}
+        ${archiveHtml}
         <div class="card">
           <strong>AI Providers</strong>
           ${(data.providers || []).map(p => `
@@ -949,6 +1171,120 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
         </div>
       `;
       document.getElementById('right-panel').innerHTML = rightHtml;
+      renderLiveTracker(wf, ch02Wf);
+    }
+
+    function switchMainTab(tab) {
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+      const btn = document.getElementById('tab-btn-' + tab);
+      const pane = document.getElementById('tab-pane-' + tab);
+      if (btn) btn.classList.add('active');
+      if (pane) pane.classList.add('active');
+      if (tab === 'files') {
+        loadFilesExplorer();
+      }
+    }
+
+    async function clearChatMessages() {
+      if (!confirm("Are you sure you want to clear chat messages and reset session history?")) return;
+      await fetch('/api/chat/clear', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ conversation_id: activeConversationId })
+      });
+      await refreshState();
+    }
+
+    function renderLiveTracker(wf, ch02Wf) {
+      const container = document.getElementById('tracker-steps-container');
+      if (!container) return;
+      const steps = wf.steps || {};
+      const ch02Steps = ch02Wf.steps || {};
+
+      const stepDefinitions = [
+        { id: 'step_1_script', title: '1. Multi-Agent Script Consultation', desc: 'ChatGPT (Master) -> Gemini (Reviewer) -> Manus (Specialist) -> ChatGPT (Synthesis)', action: 'consult_three_agents', check: steps.step_1_chatgpt_master_plan?.status === 'completed' || ch02Steps.step_script?.status === 'completed' },
+        { id: 'step_2_flow_music', title: '2. Google Flow Music Generation', desc: 'Lyria 3.5 acoustic remix, produce Candidate A and B WAVs', action: 'flow_music_audio_pipeline', check: steps.step_6a_flow_music_audio_pipeline?.status === 'completed' || ch02Steps.step_google_music_generation?.status === 'completed' },
+        { id: 'step_3_review', title: '3. Transcription & Comparative Review', desc: 'Manus Web transcription & ChatGPT comparative audio review', action: 'continue_ch02_audio', check: ch02Steps.step_manus_transcription?.status === 'completed' && ch02Steps.step_chatgpt_comparative_review?.status === 'completed' },
+        { id: 'step_4_repair', title: '4. Interactive Response Hold Calibration', desc: 'Calibrate 4.00s stillness hold gap with FFmpeg precision', action: 'apply_audio_repair', check: ch02Steps.step_audio_repair?.status === 'completed' },
+        { id: 'step_5_assets', title: '5. Master Asset & Prop Intake', desc: 'Calibrate transparent 1254x1254 character & fruit props into 01_ASSETS', action: 'generate_assets', check: steps.step_6_asset_generation_and_intake?.status === 'completed' },
+        { id: 'step_6_palmier', title: '6. Palmier Pro Timeline Assembly', desc: 'Assemble multi-track timeline, clips and markers via local MCP bridge', action: 'assemble_palmier', check: steps.step_7_palmier_editing?.status === 'completed' },
+        { id: 'step_7_export', title: '7. Native 1080p30 MP4 Export & QA', desc: 'Render final MP4 video and execute frame-by-frame RMS QA', action: 'export_mp4', check: steps.step_8_final_mp4_export?.status === 'completed' },
+        { id: 'step_8_youtube', title: '8. YouTube Studio Staging & Upload', desc: 'Stage video, tags, thumbnail, and metadata package', action: 'stage_youtube', check: steps.step_9_youtube_studio_upload?.status === 'completed' },
+      ];
+
+      container.innerHTML = stepDefinitions.map((s, idx) => {
+        const isDone = s.check;
+        return `
+          <div class="tracker-item ${isDone ? 'done' : ''}">
+            <div class="tracker-icon">${isDone ? '✓' : (idx + 1)}</div>
+            <div style="flex:1;">
+              <div style="display:flex;align-items:center;justify-content:space-between;">
+                <strong style="color:${isDone ? '#34d399' : '#f8fafc'};">${s.title}</strong>
+                <span class="badge ${isDone ? 'ok' : 'warn'}">${isDone ? 'Completed' : 'Pending'}</span>
+              </div>
+              <div style="font-size:12px;color:#94a3b8;margin-top:2px;">${s.desc}</div>
+            </div>
+            <button onclick="triggerAction('${s.action}')" style="font-size:11px;padding:4px 8px;">Run</button>
+          </div>
+        `;
+      }).join('');
+    }
+
+    async function loadFilesExplorer() {
+      const container = document.getElementById('files-explorer-container');
+      if (!container) return;
+      container.innerHTML = '<div style="color:#94a3b8;font-size:13px;">Scanning production library & working folders...</div>';
+      try {
+        const res = await fetch('/api/files');
+        const data = await res.json();
+        const pFiles = data.production_files || [];
+        const sFiles = data.scratch_files || [];
+        const tFiles = data.tracker_files || [];
+
+        function renderGroup(title, files, basePath) {
+          if (!files.length) return `<div class="file-box"><strong style="color:#60a5fa;">${title}</strong><div style="color:#94a3b8;font-size:12px;margin-top:6px;">No files found.</div></div>`;
+          return `
+            <div class="file-box">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                <strong style="color:#60a5fa;">${title} (${files.length})</strong>
+                <span style="font-size:11px;color:#94a3b8;">${basePath}</span>
+              </div>
+              ${files.map(f => {
+                let preview = '';
+                if (f.kind === 'audio') {
+                  preview = `<audio controls src="/api/audio?file=${encodeURIComponent(f.full_path)}" style="height:28px;width:240px;"></audio>`;
+                } else if (f.kind === 'video') {
+                  preview = `<video controls src="/api/video?file=${encodeURIComponent(f.full_path)}" style="height:36px;width:120px;"></video>`;
+                } else if (f.kind === 'image') {
+                  preview = `<img src="/api/image?file=${encodeURIComponent(f.full_path)}" style="height:32px;width:32px;object-fit:cover;border-radius:4px;border:1px solid #334155;" />`;
+                }
+                const kb = (f.size_bytes / 1024).toFixed(1);
+                return `
+                  <div class="file-row">
+                    <div style="display:flex;align-items:center;gap:8px;overflow:hidden;">
+                      <span class="badge" style="font-size:10px;text-transform:uppercase;">${f.kind}</span>
+                      <span style="font-weight:600;text-overflow:ellipsis;overflow:hidden;white-space:nowrap;" title="${f.full_path}">${f.rel_path}</span>
+                    </div>
+                    <div style="display:flex;align-items:center;gap:12px;flex-shrink:0;">
+                      ${preview}
+                      <span style="color:#94a3b8;font-size:11px;">${kb} KB</span>
+                    </div>
+                  </div>
+                `;
+              }).join('')}
+            </div>
+          `;
+        }
+
+        container.innerHTML = `
+          ${renderGroup('Working Flow Trackers', tFiles, 'WorkingFlowTracker/')}
+          ${renderGroup('Master Production Library (DoroNesh_2D_Animation)', pFiles, data.production_root)}
+          ${renderGroup('Working Scratch Deliverables & Candidates', sFiles, data.scratch_root)}
+        `;
+      } catch (err) {
+        container.innerHTML = `<div style="color:#ef4444;">Error loading files: ${err}</div>`;
+      }
     }
 
     async function sendChat() {
@@ -1176,11 +1512,11 @@ def create_studio_app(policy: RootPolicy | None = None) -> Starlette:
         return HTMLResponse(BROWSER_SANDBOX_HTML)
 
     async def api_state(request: Request) -> JSONResponse:
-        cid = request.query_params.get("conversation_id") or "conv-e02-ch01-main"
+        cid = request.query_params.get("conversation_id") or "conv-main"
         conv = orchestrator.store.get_conversation(cid) or orchestrator._ensure_default_conversation()
         providers = await asyncio.to_thread(orchestrator.providers.check_providers_health)
-        ep_id = conv.get("active_episode_id") or DEFAULT_TEST_EPISODE_ID
-        wf_manifest = orchestrator.workflow.load_manifest(ep_id)
+        ep_id = conv.get("active_episode_id")
+        wf_manifest = orchestrator.workflow.load_manifest(ep_id) if ep_id else {}
         ch02_manifest = orchestrator.workflow.load_manifest("EP02_CH02_AUDIO")
         return JSONResponse(
             {
@@ -1276,16 +1612,90 @@ def create_studio_app(policy: RootPolicy | None = None) -> Starlette:
         res = orchestrator.request_stop()
         return JSONResponse(res)
 
+    async def api_chat_clear(request: Request) -> JSONResponse:
+        body = await request.json()
+        cid = str(body.get("conversation_id") or "conv-main")
+        orchestrator.store.clear_conversation(cid)
+        return JSONResponse({"status": "cleared", "conversation_id": cid})
+
+    async def api_image(request: Request):
+        file_param = request.query_params.get("file")
+        if not file_param:
+            return JSONResponse({"error": "Missing 'file' parameter"}, status_code=400)
+        p = Path(file_param).resolve()
+        allowed_prefixes = list(orchestrator.policy.allowed_read_roots) + [
+            orchestrator.policy.output_root_resolved,
+            orchestrator.policy.production_root_resolved,
+        ]
+        if not any(str(p).startswith(str(prefix)) for prefix in allowed_prefixes):
+            return JSONResponse({"error": "Access denied: file outside permitted directories"}, status_code=403)
+        if not p.is_file():
+            return JSONResponse({"error": f"File not found: {p}"}, status_code=404)
+        suffix = p.suffix.lower()
+        media_type = "image/png" if suffix == ".png" else "image/jpeg"
+        return FileResponse(str(p), media_type=media_type)
+
+    async def api_files(request: Request) -> JSONResponse:
+        prod_root = orchestrator.policy.production_root_resolved
+        scratch_root = orchestrator.policy.output_root_resolved
+        tracker_root = Path(__file__).resolve().parents[3] / "WorkingFlowTracker"
+
+        def scan_dir(root: Path, max_depth: int = 4):
+            items = []
+            if not root.exists():
+                return items
+            for p in sorted(root.rglob("*")):
+                if p.is_file() and not p.name.startswith("."):
+                    try:
+                        rel = p.relative_to(root)
+                        if len(rel.parts) <= max_depth:
+                            suffix = p.suffix.lower()
+                            kind = "other"
+                            if suffix in (".wav", ".mp3", ".aac", ".m4a"):
+                                kind = "audio"
+                            elif suffix in (".mp4", ".mov", ".mkv"):
+                                kind = "video"
+                            elif suffix in (".png", ".jpg", ".jpeg", ".webp"):
+                                kind = "image"
+                            elif suffix in (".md", ".txt"):
+                                kind = "script"
+                            elif suffix in (".json",):
+                                kind = "data"
+                            elif suffix in (".palmier",):
+                                kind = "palmier"
+                            items.append({
+                                "name": p.name,
+                                "rel_path": str(rel),
+                                "full_path": str(p),
+                                "size_bytes": p.stat().st_size,
+                                "modified": p.stat().st_mtime,
+                                "kind": kind,
+                            })
+                    except Exception:
+                        pass
+            return items
+
+        return JSONResponse({
+            "production_root": str(prod_root),
+            "production_files": scan_dir(prod_root, max_depth=4),
+            "scratch_root": str(scratch_root),
+            "scratch_files": scan_dir(scratch_root / "episodes", max_depth=3),
+            "tracker_files": scan_dir(tracker_root, max_depth=2),
+        })
+
     app = Starlette(
         routes=[
             Route("/", index_page, methods=["GET"]),
             Route("/browser-sandbox", browser_sandbox_page, methods=["GET"]),
             Route("/api/state", api_state, methods=["GET"]),
             Route("/api/chat", api_chat, methods=["POST"]),
+            Route("/api/chat/clear", api_chat_clear, methods=["POST"]),
             Route("/api/browser/takeover", api_browser_takeover, methods=["POST"]),
             Route("/api/browser/preview", api_browser_preview, methods=["GET"]),
             Route("/api/audio", api_audio, methods=["GET"]),
             Route("/api/video", api_video, methods=["GET"]),
+            Route("/api/image", api_image, methods=["GET"]),
+            Route("/api/files", api_files, methods=["GET"]),
             Route("/api/stop", api_stop, methods=["POST"]),
         ]
     )

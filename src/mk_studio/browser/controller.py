@@ -266,7 +266,7 @@ class BrowserController:
             },
         }
 
-    def _get_or_create_page_target(self) -> dict[str, Any]:
+    def _get_or_create_page_target(self, preferred_url_pattern: str | None = None) -> dict[str, Any]:
         targets = self._http_json("/json/list")
         pages = [
             t
@@ -276,6 +276,16 @@ class BrowserController:
             and t.get("webSocketDebuggerUrl")
             and not str(t.get("url", "")).startswith("devtools://")
         ]
+        if preferred_url_pattern:
+            for p in pages:
+                if preferred_url_pattern.lower() in str(p.get("url", "")).lower():
+                    tid = p.get("id")
+                    if tid:
+                        try:
+                            self._http_json(f"/json/activate/{tid}")
+                        except Exception:
+                            pass
+                    return p
         if pages:
             return pages[0]
         return self._http_json("/json/new?about:blank", method="PUT")
@@ -410,7 +420,9 @@ class BrowserController:
         """Navigate the visible Chrome tab to a URL and wait for readyState === 'complete'."""
         self._require_not_in_takeover()
         self.ensure_visible_session()
-        target = self._get_or_create_page_target()
+        parsed = urllib.parse.urlparse(url)
+        domain = parsed.netloc or url
+        target = self._get_or_create_page_target(preferred_url_pattern=domain)
         ws_url = str(target["webSocketDebuggerUrl"])
 
         with CdpWebSocketClient(ws_url) as ws:
@@ -797,17 +809,17 @@ class BrowserController:
         """Submit a real prompt on https://chatgpt.com/ in the managed Chrome browser and extract the streaming response."""
         self._require_not_in_takeover()
         target_url = conversation_url or "https://chatgpt.com/"
-        dom_Now = self.inspect_dom() if self.is_reachable() else {}
-        current_url = str(dom_Now.get("url") or "")
+        target = self._get_or_create_page_target(preferred_url_pattern="chatgpt.com")
+        current_url = str(target.get("url") or "")
         if not current_url.startswith("https://chatgpt.com") or (
             conversation_url and current_url != conversation_url
         ):
             self.open_url(target_url, conversation_id=conversation_id, wait_seconds=12.0)
             time.sleep(2.5)
+            target = self._get_or_create_page_target(preferred_url_pattern="chatgpt.com")
         else:
             self.ensure_visible_session()
 
-        target = self._get_or_create_page_target()
         ws_url = str(target["webSocketDebuggerUrl"])
         escaped_prompt = json.dumps(prompt)
 
@@ -1185,8 +1197,14 @@ class BrowserController:
         """Submit a specialist task on https://manus.im/app in the managed Chrome browser, optionally attaching a file, and read the response."""
         self._require_not_in_takeover()
         target_url = conversation_url or "https://manus.im/app"
-        self.open_url(target_url, conversation_id=conversation_id, wait_seconds=12.0)
-        time.sleep(3.0)
+        target = self._get_or_create_page_target(preferred_url_pattern="manus.im")
+        current_url = str(target.get("url") or "")
+        if not current_url.startswith("https://manus.im") or (
+            conversation_url and current_url != conversation_url
+        ):
+            self.open_url(target_url, conversation_id=conversation_id, wait_seconds=12.0)
+            time.sleep(3.0)
+            target = self._get_or_create_page_target(preferred_url_pattern="manus.im")
 
         attached_file_str = None
         file_attached = False
@@ -1194,7 +1212,6 @@ class BrowserController:
             p = Path(file_path).expanduser().resolve(strict=True)
             attached_file_str = str(p)
 
-        target = self._get_or_create_page_target()
         ws_url = str(target["webSocketDebuggerUrl"])
         escaped_prompt = json.dumps(prompt)
 

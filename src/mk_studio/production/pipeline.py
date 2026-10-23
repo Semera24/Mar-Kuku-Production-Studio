@@ -83,78 +83,64 @@ def _draw_single_flower(
 
 
 def generate_flower_props(output_dir: Path) -> dict[str, Path]:
-    """Generate high-res transparent PNG teaching props for Scene 2 (2 yellow flowers) and Scene 3 (3 purple flowers)."""
+    """Generate high-res transparent PNG teaching props using official production art assets."""
     output_dir.mkdir(parents=True, exist_ok=True)
     out_paths: dict[str, Path] = {}
 
-    # 1. Two Yellow Flowers
-    im2 = Image.new("RGBA", (1000, 1000), (0, 0, 0, 0))
-    d2 = ImageDraw.Draw(im2)
-    _draw_single_flower(
-        d2,
-        320,
-        380,
-        stem_bottom_y=950,
-        petal_color=(255, 235, 59, 255),
-        outline_color=(245, 127, 23, 255),
-        center_color=(255, 152, 0, 255),
-        radius=65,
-        petal_dist=100,
-    )
-    _draw_single_flower(
-        d2,
-        680,
-        350,
-        stem_bottom_y=950,
-        petal_color=(255, 238, 88, 255),
-        outline_color=(245, 127, 23, 255),
-        center_color=(255, 167, 38, 255),
-        radius=72,
-        petal_dist=110,
-    )
+    sources_dir = Path("/Users/yonassayfu/Desktop/DoroNesh_2D_Animation/01_ASSETS/PROPS/EPISODE_002_COLOR_GARDEN/01_SOURCES")
+    src_yellow = sources_dir / "E02_Flower_Yellow_v001.png"
+    src_purple = sources_dir / "E02_Flower_Purple_v001.png"
+    src_red = sources_dir / "E02_Flower_Red_v001.png"
+    src_blue = sources_dir / "E02_Flower_Blue_v001.png"
+
+    # 1. Two Yellow Flowers (composed from official yellow flower art asset)
     p2 = output_dir / "prop_flowers_yellow_2.png"
-    im2.save(p2, format="PNG")
+    if src_yellow.is_file():
+        im2 = Image.new("RGBA", (1200, 1000), (0, 0, 0, 0))
+        with Image.open(src_yellow) as yfl:
+            y1 = yfl.resize((520, 720), Image.Resampling.LANCZOS)
+            y2 = yfl.resize((560, 770), Image.Resampling.LANCZOS)
+            im2.alpha_composite(y1, (80, 220))
+            im2.alpha_composite(y2, (560, 170))
+        im2.save(p2, format="PNG")
+    else:
+        im2 = Image.new("RGBA", (1000, 1000), (0, 0, 0, 0))
+        d2 = ImageDraw.Draw(im2)
+        _draw_single_flower(d2, 320, 380, stem_bottom_y=950, petal_color=(255, 235, 59, 255), outline_color=(245, 127, 23, 255), center_color=(255, 152, 0, 255), radius=65, petal_dist=100)
+        _draw_single_flower(d2, 680, 350, stem_bottom_y=950, petal_color=(255, 238, 88, 255), outline_color=(245, 127, 23, 255), center_color=(255, 167, 38, 255), radius=72, petal_dist=110)
+        im2.save(p2, format="PNG")
     out_paths["prop_flowers_yellow_2"] = p2
 
-    # 2. Three Purple Flowers
-    im3 = Image.new("RGBA", (1200, 1000), (0, 0, 0, 0))
-    d3 = ImageDraw.Draw(im3)
-    _draw_single_flower(
-        d3,
-        280,
-        420,
-        stem_bottom_y=950,
-        petal_color=(171, 71, 188, 255),
-        outline_color=(106, 27, 154, 255),
-        center_color=(255, 214, 0, 255),
-        radius=60,
-        petal_dist=95,
-    )
-    _draw_single_flower(
-        d3,
-        600,
-        340,
-        stem_bottom_y=950,
-        petal_color=(186, 104, 200, 255),
-        outline_color=(106, 27, 154, 255),
-        center_color=(255, 214, 0, 255),
-        radius=75,
-        petal_dist=115,
-    )
-    _draw_single_flower(
-        d3,
-        920,
-        410,
-        stem_bottom_y=950,
-        petal_color=(156, 39, 176, 255),
-        outline_color=(74, 20, 140, 255),
-        center_color=(255, 214, 0, 255),
-        radius=65,
-        petal_dist=100,
-    )
+    # 2. Three Purple Flowers (composed from official purple flower art asset)
     p3 = output_dir / "prop_flowers_purple_3.png"
-    im3.save(p3, format="PNG")
+    if src_purple.is_file():
+        im3 = Image.new("RGBA", (1400, 1000), (0, 0, 0, 0))
+        with Image.open(src_purple) as pfl:
+            p1_fl = pfl.resize((480, 680), Image.Resampling.LANCZOS)
+            p2_fl = pfl.resize((520, 740), Image.Resampling.LANCZOS)
+            p3_fl = pfl.resize((460, 650), Image.Resampling.LANCZOS)
+            im3.alpha_composite(p1_fl, (30, 260))
+            im3.alpha_composite(p2_fl, (440, 190))
+            im3.alpha_composite(p3_fl, (880, 280))
+        im3.save(p3, format="PNG")
+    else:
+        im3 = Image.new("RGBA", (1200, 1000), (0, 0, 0, 0))
+        d3 = ImageDraw.Draw(im3)
+        _draw_single_flower(d3, 280, 420, stem_bottom_y=950, petal_color=(171, 71, 188, 255), outline_color=(106, 27, 154, 255), center_color=(255, 214, 0, 255), radius=60, petal_dist=95)
+        _draw_single_flower(d3, 600, 340, stem_bottom_y=950, petal_color=(186, 104, 200, 255), outline_color=(106, 27, 154, 255), center_color=(255, 214, 0, 255), radius=75, petal_dist=115)
+        _draw_single_flower(d3, 920, 410, stem_bottom_y=950, petal_color=(156, 39, 176, 255), outline_color=(74, 20, 140, 255), center_color=(255, 214, 0, 255), radius=65, petal_dist=100)
+        im3.save(p3, format="PNG")
     out_paths["prop_flowers_purple_3"] = p3
+
+    # 3. Single Flowers
+    if src_red.is_file():
+        p_red = output_dir / "prop_flower_red.png"
+        shutil.copy2(src_red, p_red)
+        out_paths["prop_flower_red"] = p_red
+    if src_blue.is_file():
+        p_blue = output_dir / "prop_flower_blue.png"
+        shutil.copy2(src_blue, p_blue)
+        out_paths["prop_flower_blue"] = p_blue
 
     return out_paths
 

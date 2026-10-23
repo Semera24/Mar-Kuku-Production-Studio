@@ -991,6 +991,15 @@ class StateStore:
                 out.append(d)
             return out
 
+    def clear_conversation(self, conversation_id: str) -> None:
+        """Purge messages, jobs, browser tasks, and Mac actions for a conversation to give a fresh slate."""
+        self.initialize_studio_schema()
+        with self._short_tx() as conn:
+            conn.execute("DELETE FROM messages WHERE conversation_id = ?", (conversation_id,))
+            conn.execute("DELETE FROM jobs WHERE conversation_id = ?", (conversation_id,))
+            conn.execute("DELETE FROM browser_tasks WHERE conversation_id = ?", (conversation_id,))
+            conn.execute("DELETE FROM mac_actions WHERE conversation_id = ?", (conversation_id,))
+
     def create_job(
         self,
         *,

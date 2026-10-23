@@ -35,12 +35,12 @@ class GoogleFlowMusicAdapter:
 
     def check_connection_and_auth(self) -> dict[str, Any]:
         """Check if Flow Music is open and verify if dancingPatina PLUS is authenticated."""
-        dom = self.browser.inspect_dom() if self.browser.is_reachable() else {}
-        url = str(dom.get("url") or "")
+        target = self.browser._get_or_create_page_target(preferred_url_pattern="flowmusic.app")
+        url = str(target.get("url") or "")
         if not url.startswith(self.FLOW_BASE_URL):
             self.browser.open_url(self.FLOW_BASE_URL, wait_seconds=6.0)
             time.sleep(2.0)
-            dom = self.browser.inspect_dom()
+        dom = self.browser.inspect_dom()
 
         body_text = str(dom.get("bodyTextExcerpt") or "")
         buttons = [str(b.get("text") or "") for b in dom.get("buttons") or []]
@@ -75,7 +75,7 @@ class GoogleFlowMusicAdapter:
 
     def trigger_remix_for_track(self, track_name: str = "Five Flowers in the Garden") -> dict[str, Any]:
         """Click the Remix button for the specified track."""
-        target = self.browser._get_or_create_page_target()
+        target = self.browser._get_or_create_page_target(preferred_url_pattern="flowmusic.app")
         ws_url = str(target["webSocketDebuggerUrl"])
         escaped_track = json.dumps(track_name)
 
@@ -139,7 +139,7 @@ class GoogleFlowMusicAdapter:
         if not prompt_text or not prompt_text.strip():
             raise BrowserControlError("Cannot submit empty prompt to Flow Music Producer")
 
-        target = self.browser._get_or_create_page_target()
+        target = self.browser._get_or_create_page_target(preferred_url_pattern="flowmusic.app")
         ws_url = str(target["webSocketDebuggerUrl"])
         escaped_prompt = json.dumps(prompt_text)
 
@@ -192,7 +192,7 @@ class GoogleFlowMusicAdapter:
 
     def list_session_tracks(self) -> list[dict[str, Any]]:
         """List all tracks present in the current Flow Music session."""
-        target = self.browser._get_or_create_page_target()
+        target = self.browser._get_or_create_page_target(preferred_url_pattern="flowmusic.app")
         ws_url = str(target["webSocketDebuggerUrl"])
 
         with CdpWebSocketClient(ws_url) as ws:
@@ -241,7 +241,7 @@ class GoogleFlowMusicAdapter:
         dest = Path(destination_dir) if destination_dir else (self.browser.policy.output_root_resolved / "downloads")
         dest.mkdir(parents=True, exist_ok=True)
 
-        target = self.browser._get_or_create_page_target()
+        target = self.browser._get_or_create_page_target(preferred_url_pattern="flowmusic.app")
         ws_url = str(target["webSocketDebuggerUrl"])
 
         before_files = set(downloads_dir.glob("*.wav")) | set(downloads_dir.glob("*.mp3")) | set(downloads_dir.glob("*.zip"))
