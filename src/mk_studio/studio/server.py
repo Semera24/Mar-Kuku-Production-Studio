@@ -22,10 +22,12 @@ from mk_studio.config import RootPolicy
 from mk_studio.editors.palmier import PalmierAdapter
 from mk_studio.mac.controller import MacController
 from mk_studio.providers.registry import ProviderError, ProviderRegistry
+from mk_studio.os_compat import focus_application, get_platform_name, is_linux, is_macos, open_file_or_folder
 from mk_studio.runner import StepRunner
 from mk_studio.scheduler import StudioScheduler
 from mk_studio.skills.loader import SkillRegistry
 from mk_studio.state import StateStore
+from mk_studio.telegram.bot import TelegramService
 from mk_studio.studio.workflow import (
     DEFAULT_TEST_EPISODE_ID,
     StudioWorkflowEngine,
@@ -74,6 +76,8 @@ class StudioOrchestrator:
         self.production = ProductionService(self.policy, cancel_event=self.cancel_event)
         self.skills = SkillRegistry(Path(__file__).resolve().parents[3])
         self.scheduler = StudioScheduler()
+        self.telegram = TelegramService()
+        self.telegram.start_polling(self)
         self._ensure_default_conversation()
 
     def request_stop(self) -> dict[str, Any]:
@@ -716,6 +720,19 @@ class StudioOrchestrator:
             citations=citations,
         )
 
+        if reply_text and hasattr(self, "telegram"):
+            try:
+                requires_gate = job_status == "blocked" or "awaiting" in reply_text.lower() or "approval" in reply_text.lower()
+                self.telegram.notify_step(
+                    step_title=inferred_action or f"Chat ({eff_provider})",
+                    status=job_status,
+                    summary=reply_text[:280] + ("..." if len(reply_text) > 280 else ""),
+                    requires_approval=requires_gate,
+                    next_step_hint="Next Production Step",
+                )
+            except Exception:
+                pass
+
         return {
             "conversation": self.store.get_conversation(conversation_id),
             "user_message": user_msg_row,
@@ -979,11 +996,13 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
         <div style="display:flex;align-items:center;gap:8px;">
           <button id="toggle-left-btn" onclick="toggleSidebar('left')" style="padding:5px 9px;font-size:12px;background:#1e293b;" title="Toggle Workflows Panel">☰ Workflows</button>
           <span id="conv-title" style="font-weight:600;font-size:14px;color:#f8fafc;">Universal Studio Session</span>
+          <span id="platform-badge" class="badge" style="background:#1e293b;border:1px solid #475569;font-size:10px;color:#38bdf8;" title="Multi-Platform Engine: macOS & Bare Debian 13 Linux">Debian 13 Ready</span>
           <select id="niche-selector" onchange="switchNicheSkill(this.value)" style="background:#1e293b;border:1px solid #3b82f6;color:#60a5fa;font-weight:600;padding:4px 8px;font-size:12px;border-radius:6px;cursor:pointer;" title="Switch Active 16:9 YouTube Niche Blueprint">
           </select>
         </div>
         <div style="display:flex;align-items:center;gap:6px;">
           <button onclick="toggleActionDrawer()" id="toggle-actions-btn" style="background:#334155;font-weight:600;padding:5px 9px;font-size:12px;" title="Show/Hide Action Buttons">⚡ Actions ▾</button>
+          <button onclick="openTelegramModal()" id="telegram-btn" style="background:#0284c7;font-weight:600;padding:5px 9px;font-size:12px;" title="Configure mobile Telegram notifications and approval">📱 Telegram Gateway</button>
           <button id="toggle-right-btn" onclick="toggleSidebar('right')" style="padding:5px 9px;font-size:12px;background:#1e293b;" title="Toggle Activity Logs Panel">📊 Activity &amp; Logs</button>
         </div>
       </div>
@@ -1159,6 +1178,54 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
     </header>
     <div class="scroll" id="right-panel"></div>
   </aside>
+
+  <!-- Telegram Remote Gateway Modal -->
+  <div id="telegram-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:9999;align-items:center;justify-content:center;">
+    <div style="background:#0f172a;border:1px solid #3b82f6;border-radius:10px;width:90%;max-width:540px;padding:22px;box-shadow:0 20px 25px -5px rgba(0,0,0,0.5);">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <h3 style="margin:0;color:#f8fafc;display:flex;align-items:center;gap:8px;">
+          <span>📱 Mobile Telegram Gateway</span>
+          <span id="tg-modal-badge" class="badge">Checking...</span>
+        </h3>
+        <button onclick="closeTelegramModal()" style="background:transparent;border:none;color:#94a3b8;font-size:16px;cursor:pointer;">✕</button>
+      </div>
+      <p style="font-size:12px;color:#94a3b8;margin-top:0;line-height:1.4;">
+        Connect your free Telegram bot to receive real-time push alerts when steps finish, and reply <code>Next</code>, <code>Approve</code>, or send corrections directly from your phone.
+      </p>
+      
+      <div style="background:#1e293b;padding:10px;border-radius:6px;font-size:11px;color:#cbd5e1;margin-bottom:12px;line-height:1.4;">
+        <strong>Quick 60-Second Setup:</strong><br/>
+        1. Open Telegram on your phone and search for <code>@BotFather</code>.<br/>
+        2. Send <code>/newbot</code>, choose a name and username, then copy your <b>Bot Token</b>.<br/>
+        3. Message your bot once (say "hi"), and get your numeric <b>Chat ID</b> from <code>@userinfobot</code>.
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:14px;">
+        <div>
+          <label style="display:block;font-size:11px;color:#94a3b8;margin-bottom:3px;font-weight:600;">Telegram Bot Token:</label>
+          <input id="tg-bot-token" type="password" placeholder="e.g. 7123456789:AAHq..." style="width:100%;box-sizing:border-box;background:#0b1120;border:1px solid #334155;color:#fff;padding:8px;border-radius:6px;font-size:12px;" />
+        </div>
+        <div>
+          <label style="display:block;font-size:11px;color:#94a3b8;margin-bottom:3px;font-weight:600;">Your Telegram Chat ID:</label>
+          <input id="tg-chat-id" type="text" placeholder="e.g. 123456789" style="width:100%;box-sizing:border-box;background:#0b1120;border:1px solid #334155;color:#fff;padding:8px;border-radius:6px;font-size:12px;" />
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;margin-top:2px;">
+          <input id="tg-enabled-cb" type="checkbox" checked style="cursor:pointer;" />
+          <label for="tg-enabled-cb" style="font-size:12px;color:#f8fafc;cursor:pointer;">Enable Real-Time Mobile Push Notifications &amp; Two-Way Replies</label>
+        </div>
+      </div>
+
+      <div id="tg-test-feedback" style="display:none;font-size:11px;padding:8px;border-radius:6px;margin-bottom:12px;"></div>
+
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <button onclick="testTelegramConnection()" style="background:#334155;color:#fff;padding:6px 12px;font-size:12px;border-radius:6px;cursor:pointer;">🧪 Test &amp; Ping Phone</button>
+        <div style="display:flex;gap:8px;">
+          <button onclick="closeTelegramModal()" style="background:transparent;border:1px solid #334155;color:#cbd5e1;padding:6px 12px;font-size:12px;border-radius:6px;cursor:pointer;">Cancel</button>
+          <button class="primary" onclick="saveTelegramSettings()" style="padding:6px 14px;font-size:12px;font-weight:600;cursor:pointer;">Save &amp; Activate</button>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <script>
     let activeConversationId = 'conv-main';
@@ -1908,8 +1975,112 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
       await refreshState();
     }
 
+    async function openTelegramModal() {
+      const modal = document.getElementById('telegram-modal');
+      if (modal) {
+        modal.style.display = 'flex';
+        try {
+          const res = await fetch('/api/telegram');
+          const cfg = await res.json();
+          document.getElementById('tg-bot-token').value = cfg.bot_token || '';
+          document.getElementById('tg-chat-id').value = cfg.chat_id || '';
+          document.getElementById('tg-enabled-cb').checked = Boolean(cfg.enabled);
+          const badge = document.getElementById('tg-modal-badge');
+          if (badge) {
+            badge.innerText = cfg.is_configured ? (cfg.enabled ? '🟢 Connected' : '⏸ Paused') : '⚪ Not configured';
+            badge.className = 'badge ' + (cfg.is_configured && cfg.enabled ? 'ok' : 'warn');
+          }
+        } catch (e) {
+          console.error(e);
+        }
+      }
+    }
+
+    function closeTelegramModal() {
+      const modal = document.getElementById('telegram-modal');
+      if (modal) modal.style.display = 'none';
+      const feedback = document.getElementById('tg-test-feedback');
+      if (feedback) feedback.style.display = 'none';
+    }
+
+    async function saveTelegramSettings() {
+      const token = document.getElementById('tg-bot-token').value.trim();
+      const chat_id = document.getElementById('tg-chat-id').value.trim();
+      const enabled = document.getElementById('tg-enabled-cb').checked;
+      try {
+        await fetch('/api/telegram', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ bot_token: token, chat_id: chat_id, enabled: enabled })
+        });
+        alert("✅ Telegram settings saved and activated successfully!");
+        closeTelegramModal();
+        await refreshTelegramStatus();
+      } catch (err) {
+        alert("Failed to save Telegram settings: " + err);
+      }
+    }
+
+    async function testTelegramConnection() {
+      const token = document.getElementById('tg-bot-token').value.trim();
+      const chat_id = document.getElementById('tg-chat-id').value.trim();
+      const fb = document.getElementById('tg-test-feedback');
+      if (!token) {
+        alert("Please enter a Bot Token first.");
+        return;
+      }
+      if (fb) {
+        fb.style.display = 'block';
+        fb.style.background = '#1e3a8a';
+        fb.style.color = '#bfdbfe';
+        fb.innerText = 'Connecting to Telegram servers...';
+      }
+      try {
+        const res = await fetch('/api/telegram/test', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ bot_token: token, chat_id: chat_id })
+        });
+        const data = await res.json();
+        if (data.ok) {
+          fb.style.background = '#065f46';
+          fb.style.color = '#a7f3d0';
+          fb.innerText = '✅ Success! Verified Bot: @' + data.bot_username + (data.message_sent ? ' (Test message sent to your phone!)' : ' (Chat ID verified).');
+          await refreshTelegramStatus();
+        } else {
+          fb.style.background = '#7f1d1d';
+          fb.style.color = '#fecaca';
+          fb.innerText = '❌ Error: ' + (data.error || 'Connection failed.');
+        }
+      } catch (err) {
+        if (fb) {
+          fb.style.background = '#7f1d1d';
+          fb.style.color = '#fecaca';
+          fb.innerText = '❌ Request failed: ' + err;
+        }
+      }
+    }
+
+    async function refreshTelegramStatus() {
+      try {
+        const res = await fetch('/api/telegram');
+        const cfg = await res.json();
+        const btn = document.getElementById('telegram-btn');
+        if (btn) {
+          if (cfg.is_configured && cfg.enabled) {
+            btn.innerHTML = '📱 Telegram: 🟢 ON';
+            btn.style.background = '#059669';
+          } else {
+            btn.innerHTML = '📱 Telegram Gateway';
+            btn.style.background = '#0284c7';
+          }
+        }
+      } catch (e) {}
+    }
+
     refreshState();
     refreshSkills();
+    refreshTelegramStatus();
   </script>
 </body>
 </html>
@@ -2234,7 +2405,6 @@ def create_studio_app(policy: RootPolicy | None = None) -> Starlette:
         })
 
     async def api_files_open(request: Request) -> JSONResponse:
-        import subprocess
         body = await request.json()
         raw_path = body.get("path")
         if not raw_path:
@@ -2249,21 +2419,39 @@ def create_studio_app(policy: RootPolicy | None = None) -> Starlette:
         if not p.exists():
             return JSONResponse({"error": f"File not found: {p}"}, status_code=404)
         reveal = bool(body.get("reveal", False))
-        cmd = ["/usr/bin/open", "-R", str(p)] if reveal else ["/usr/bin/open", str(p)]
         try:
-            subprocess.run(cmd, check=False)
-            return JSONResponse({"status": "opened", "path": str(p), "revealed": reveal})
+            res = open_file_or_folder(p, reveal=reveal)
+            return JSONResponse({"status": "opened", "path": str(p), "revealed": reveal, "returncode": res.returncode})
         except Exception as exc:
             return JSONResponse({"error": str(exc)}, status_code=500)
 
     async def api_browser_focus(request: Request) -> JSONResponse:
-        import subprocess
         try:
-            script = 'tell application "Google Chrome" to activate'
-            res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=5)
-            return JSONResponse({"status": "focused", "returncode": res.returncode})
+            ok = focus_application("Google Chrome")
+            return JSONResponse({"status": "focused" if ok else "unsupported", "ok": ok})
         except Exception as exc:
             return JSONResponse({"status": "error", "error": str(exc)}, status_code=500)
+
+    async def api_telegram(request: Request) -> JSONResponse:
+        if request.method == "GET":
+            return JSONResponse(orchestrator.telegram.get_config())
+        elif request.method == "POST":
+            body = await request.json()
+            cfg = orchestrator.telegram.save_config(
+                bot_token=str(body.get("bot_token") or ""),
+                chat_id=str(body.get("chat_id") or ""),
+                enabled=bool(body.get("enabled", True)),
+                notify_on_step_complete=bool(body.get("notify_on_step_complete", True)),
+                notify_on_approval_needed=bool(body.get("notify_on_approval_needed", True)),
+            )
+            return JSONResponse({"status": "saved", "config": cfg})
+
+    async def api_telegram_test(request: Request) -> JSONResponse:
+        body = await request.json()
+        token = body.get("bot_token")
+        chat_id = body.get("chat_id")
+        res = orchestrator.telegram.test_connection(token=token, chat_id=chat_id)
+        return JSONResponse(res)
 
     async def api_episode_archive(request: Request) -> JSONResponse:
         body = await request.json()
@@ -2388,6 +2576,8 @@ def create_studio_app(policy: RootPolicy | None = None) -> Starlette:
             Route("/api/browser/focus", api_browser_focus, methods=["POST"]),
             Route("/api/skills", api_skills, methods=["GET", "POST"]),
             Route("/api/cron", api_cron, methods=["GET", "POST"]),
+            Route("/api/telegram", api_telegram, methods=["GET", "POST"]),
+            Route("/api/telegram/test", api_telegram_test, methods=["POST"]),
             Route("/api/episode/memory", api_episode_memory, methods=["GET", "POST"]),
             Route("/api/episode/archive", api_episode_archive, methods=["POST"]),
             Route("/api/audio", api_audio, methods=["GET"]),
