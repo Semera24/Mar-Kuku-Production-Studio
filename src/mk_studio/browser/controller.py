@@ -914,6 +914,7 @@ class BrowserController:
             stable_ticks = 0
             last_text = ""
             final_text = ""
+            rate_limit_detected = False
             while time.monotonic() < deadline:
                 self._check_cancel()
                 time.sleep(0.75)
@@ -937,13 +938,16 @@ class BrowserController:
                                 }
                                 saidText = raw.trim();
                             }
+                            const isRateLimited = /you've reached (your|our) (limit|usage limit)|too many requests|try again in \\d+|rate limit reached|plan limit|limit reached for gpt/i.test(bodyText) ||
+                                Boolean(document.querySelector('[data-testid="error-banner"], .text-token-text-error, .alert-error'));
                             return JSON.stringify({
                                 url: window.location.href,
                                 nodeCount: nodes.length,
                                 nodeText: nodeText,
                                 saidCount: Math.max(0, saidParts.length - 1),
                                 saidText: saidText,
-                                streaming: Boolean(stopBtn)
+                                streaming: Boolean(stopBtn),
+                                rateLimited: isRateLimited
                             });
                         })()
                         """,
@@ -951,6 +955,10 @@ class BrowserController:
                     },
                 )
                 p_data = json.loads((poll_ev.get("result") or {}).get("value") or "{}")
+                if p_data.get("rateLimited"):
+                    rate_limit_detected = True
+                    break
+
                 cand = ""
                 if int(p_data.get("nodeCount") or 0) > before_nodes and p_data.get("nodeText"):
                     cand = str(p_data["nodeText"]).strip()
@@ -970,6 +978,30 @@ class BrowserController:
         shot = self.capture_screenshot(screenshot_name, conversation_id=conversation_id)
         dom = self.inspect_dom()
         live_url = str(dom.get("url") or target_url)
+        if rate_limit_detected:
+            rec = self.store.record_browser_task(
+                conversation_id=conversation_id,
+                session_id=self.session_id,
+                url=live_url,
+                title=str(dom.get("title") or "ChatGPT (Rate Limited)"),
+                action_kind="consult_chatgpt_web",
+                status="rate_limited",
+                artifact_path=shot["path"],
+                artifact_sha256=shot["sha256"],
+                summary={"prompt": prompt[:240], "reason": "Rate limit / tab limit encountered", "url": live_url},
+            )
+            return {
+                "site": "chatgpt_web",
+                "status": "rate_limited",
+                "url": live_url,
+                "title": str(dom.get("title") or "ChatGPT"),
+                "prompt": prompt,
+                "response": "",
+                "reason": "ChatGPT rate limit or message limit reached",
+                "screenshot": shot,
+                "task": rec,
+            }
+
         status = "succeeded" if final_text else "failed"
         rec = self.store.record_browser_task(
             conversation_id=conversation_id,

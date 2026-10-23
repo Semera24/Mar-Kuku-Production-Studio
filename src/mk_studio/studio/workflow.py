@@ -197,6 +197,21 @@ class StudioWorkflowEngine:
             manifest['status'] = 'needs_reconciliation'
             self.save_manifest(manifest, episode_id)
             raise
+
+        if result.get('status') == 'rate_limited' and site == 'chatgpt':
+            # Resilient Browser Agent condition: if ChatGPT reaches tab/time/rate limitation,
+            # Studio automatically starts a new tab / agent failover to Google Gemini
+            try:
+                failover_site = 'gemini'
+                failover_result = getattr(self.browser, f'consult_{failover_site}_web')(
+                    prompt, conversation_id=conversation_id,
+                    screenshot_name=f'{episode_id}_{key}_failover_{failover_site}.png')
+                if failover_result.get('status') in ('succeeded', 'passed', 'completed') and str(failover_result.get('response') or '').strip():
+                    result = failover_result
+                    site = failover_site
+                    step['failover'] = {'original_site': 'chatgpt', 'fallback_site': 'gemini', 'reason': 'rate_limit_or_tab_limit'}
+            except Exception:
+                pass
         response = str(result.get('response') or '').strip()
         if result.get('status') not in ('succeeded', 'passed', 'completed') or not response:
             step.update(status='awaiting_owner_login' if result.get('status') == 'awaiting_owner_login'

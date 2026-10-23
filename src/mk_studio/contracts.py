@@ -332,3 +332,44 @@ class TimelinePlan(StrictModel):
     tracks: list[TrackPlan]
     markers: list[MarkerPlan]
 
+
+KIDS_CHANNEL_STYLE_STANDARD = {
+    "channel_id": "mar-kuku-kids",
+    "channel_title": "Mar & Kuku - Toddler & Preschool Learning Channel",
+    "target_age_group": "2-4 years old (Toddlers & Preschoolers)",
+    "pedagogical_approach": "Repetitive catchy songs, bright primary color recognition, call-and-response questions",
+    "cast": {
+        "mar": {
+            "role": "Warm, encouraging older sister & toddler learning guide",
+            "vocal_profile": "Gentle, clear, melodic female voice. Slow enunciation (~100-110 wpm), enthusiastic yet soothing.",
+            "forbidden": "No adult slang, no complex words, no loud abrupt screams."
+        },
+        "kuku": {
+            "role": "Playful, energetic baby chicken companion",
+            "vocal_profile": "High-pitched cute toddler chirps, short 1-3 word confirmations, sweet giggles.",
+            "reactions": "Chirps excitedly when answers are revealed: 'One! Two! Three!', 'Apple red! Chirp!'"
+        }
+    },
+    "forbidden_elements": [
+        "No third or extraneous human characters without explicit owner brief",
+        "No complex multi-clause sentences for toddlers",
+        "No missing response pause: interactive pause must be preserved"
+    ],
+    "interactive_hold": {
+        "duration_seconds": 4.00,
+        "frames_30fps": 120,
+        "purpose": "Mandatory stillness pause allowing toddler viewers to shout their answer before Kuku resolves."
+    },
+    "audio_music_standard": {
+        "format": "48000Hz, 16-bit, 2-channel Stereo WAV",
+        "tempo": "118-124 bpm (bouncy toddler rhythm)",
+        "instrumentation": "Acoustic guitar, soft nursery bells, light wooden percussion, warm bass"
+    },
+    "visual_prop_standard": {
+        "dimensions": "1254x1254 transparent PNG",
+        "style": "2D vector storybook art, thick clean outlines, high contrast primary/secondary colors",
+        "library_source": "01_ASSETS/PROPS/EPISODE_002_COLOR_GARDEN/01_SOURCES/"
+    }
+}
+
+

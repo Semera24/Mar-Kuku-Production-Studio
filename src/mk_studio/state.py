@@ -805,6 +805,25 @@ class StateStore:
         sql = MIGRATION_002_PATH.read_text(encoding="utf-8")
         with self._short_tx() as conn:
             conn.executescript(sql)
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS episode_memory (
+                    channel_id TEXT NOT NULL DEFAULT 'mar-kuku-kids',
+                    episode_id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'in_production',
+                    style_guide_json TEXT NOT NULL DEFAULT '{}',
+                    master_script_path TEXT,
+                    master_audio_path TEXT,
+                    master_video_path TEXT,
+                    youtube_url TEXT,
+                    archive_receipt_json TEXT DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    archived_at TEXT
+                );
+                """
+            )
 
     # ------------------------------------------------------------------
     # Persistent Studio Conversations, Messages, and Jobs
@@ -999,6 +1018,122 @@ class StateStore:
             conn.execute("DELETE FROM jobs WHERE conversation_id = ?", (conversation_id,))
             conn.execute("DELETE FROM browser_tasks WHERE conversation_id = ?", (conversation_id,))
             conn.execute("DELETE FROM mac_actions WHERE conversation_id = ?", (conversation_id,))
+
+    def save_episode_memory(
+        self,
+        *,
+        episode_id: str,
+        title: str,
+        channel_id: str = "mar-kuku-kids",
+        status: str = "in_production",
+        style_guide: dict[str, Any] | None = None,
+        master_script_path: str = "",
+        master_audio_path: str = "",
+        master_video_path: str = "",
+        youtube_url: str = "",
+        archive_receipt: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        self.initialize_studio_schema()
+        now = utc_now_iso()
+        with self._short_tx() as conn:
+            conn.execute(
+                """
+                INSERT INTO episode_memory (
+                    channel_id, episode_id, title, status, style_guide_json,
+                    master_script_path, master_audio_path, master_video_path,
+                    youtube_url, archive_receipt_json, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(episode_id) DO UPDATE SET
+                    title = excluded.title,
+                    status = excluded.status,
+                    style_guide_json = excluded.style_guide_json,
+                    master_script_path = CASE WHEN excluded.master_script_path != '' THEN excluded.master_script_path ELSE master_script_path END,
+                    master_audio_path = CASE WHEN excluded.master_audio_path != '' THEN excluded.master_audio_path ELSE master_audio_path END,
+                    master_video_path = CASE WHEN excluded.master_video_path != '' THEN excluded.master_video_path ELSE master_video_path END,
+                    youtube_url = CASE WHEN excluded.youtube_url != '' THEN excluded.youtube_url ELSE youtube_url END,
+                    archive_receipt_json = CASE WHEN excluded.archive_receipt_json != '{}' THEN excluded.archive_receipt_json ELSE archive_receipt_json END,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    channel_id,
+                    episode_id,
+                    title,
+                    status,
+                    json.dumps(style_guide or {}),
+                    master_script_path,
+                    master_audio_path,
+                    master_video_path,
+                    youtube_url,
+                    json.dumps(archive_receipt or {}),
+                    now,
+                    now,
+                ),
+            )
+        return self.get_episode_memory(episode_id)
+
+    def get_episode_memory(self, episode_id: str) -> dict[str, Any]:
+        self.initialize_studio_schema()
+        with self._short_tx() as conn:
+            row = conn.execute("SELECT * FROM episode_memory WHERE episode_id = ?", (episode_id,)).fetchone()
+            if not row:
+                return {}
+            d = dict(row)
+            d["style_guide"] = json.loads(d.get("style_guide_json") or "{}")
+            d["archive_receipt"] = json.loads(d.get("archive_receipt_json") or "{}")
+            return d
+
+    def list_episode_memories(self, channel_id: str = "mar-kuku-kids") -> list[dict[str, Any]]:
+        self.initialize_studio_schema()
+        with self._short_tx() as conn:
+            rows = conn.execute("SELECT * FROM episode_memory WHERE channel_id = ? ORDER BY created_at DESC", (channel_id,)).fetchall()
+            out = []
+            for r in rows:
+                d = dict(r)
+                d["style_guide"] = json.loads(d.get("style_guide_json") or "{}")
+                d["archive_receipt"] = json.loads(d.get("archive_receipt_json") or "{}")
+                out.append(d)
+            return out
+
+    def archive_and_clean_episode(
+        self,
+        episode_id: str,
+        *,
+        conversation_id: str = "conv-main",
+        working_folder: Path | None = None,
+        archive_receipt: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Mark episode as published, preserve master history, and purge intermediate working candidate takes and messages."""
+        self.initialize_studio_schema()
+        now = utc_now_iso()
+        with self._short_tx() as conn:
+            conn.execute(
+                """
+                UPDATE episode_memory
+                SET status = 'published', archived_at = ?, updated_at = ?,
+                    archive_receipt_json = ?
+                WHERE episode_id = ?
+                """,
+                (now, now, json.dumps(archive_receipt or {}), episode_id),
+            )
+        self.clear_conversation(conversation_id)
+
+        cleaned_files = []
+        if working_folder and working_folder.is_dir():
+            original_dir = working_folder / "00_ORIGINAL"
+            if original_dir.is_dir():
+                for f in original_dir.glob("*.wav"):
+                    try:
+                        f.unlink(missing_ok=True)
+                        cleaned_files.append(str(f))
+                    except Exception:
+                        pass
+        return {
+            "status": "archived_and_cleaned",
+            "episode_id": episode_id,
+            "archived_at": now,
+            "cleaned_intermediate_takes": cleaned_files,
+        }
 
     def create_job(
         self,

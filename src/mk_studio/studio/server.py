@@ -16,6 +16,7 @@ from starlette.routing import Route
 
 from mk_studio import cli
 from mk_studio.browser.controller import BrowserCancelledError, BrowserController
+from mk_studio.contracts import KIDS_CHANNEL_STYLE_STANDARD
 from mk_studio.media import CH01_PINNED_INPUTS
 from mk_studio.config import RootPolicy
 from mk_studio.editors.palmier import PalmierAdapter
@@ -949,6 +950,7 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
       <button class="tab-btn active" id="tab-btn-chat" onclick="switchMainTab('chat')">💬 Production Chat</button>
       <button class="tab-btn" id="tab-btn-tracker" onclick="switchMainTab('tracker')">📋 Live Workflow Tracker</button>
       <button class="tab-btn" id="tab-btn-files" onclick="switchMainTab('files')">📁 Files &amp; Asset Explorer</button>
+      <button class="tab-btn" id="tab-btn-browser" onclick="switchMainTab('browser')">🌐 Live Browser View</button>
       <button onclick="clearChatMessages()" style="background:#dc2626;color:#fff;border:none;padding:5px 12px;font-size:12px;font-weight:600;border-radius:4px;cursor:pointer;margin-left:auto;" title="Clear conversation chat and reset session history">🗑 Clear Chat</button>
     </div>
 
@@ -1001,6 +1003,29 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
         <button onclick="loadFilesExplorer()" style="font-size:12px;">Refresh Files</button>
       </div>
       <div id="files-explorer-container"></div>
+    </div>
+
+    <!-- Tab 4: Live Browser View Pane -->
+    <div id="tab-pane-browser" class="tab-pane" style="padding:16px;flex:1;min-height:0;display:none;flex-direction:column;">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;background:var(--panel);padding:12px 16px;border-radius:8px;border:1px solid var(--border);margin-bottom:12px;">
+        <div>
+          <h3 style="margin:0;font-size:16px;color:#f8fafc;display:flex;align-items:center;gap:8px;">
+            <span>🌐 Live Managed Chrome Browser &amp; Takeover</span>
+            <span id="browser-live-badge" class="badge ok">CDP Port 9222 Connected</span>
+          </h3>
+          <span style="font-size:12px;color:#94a3b8;" id="browser-live-url">Real Google Chrome Instance &bull; Session: default-chrome-cdp</span>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+          <button class="primary" onclick="focusChromeWindow()" title="Bring Chrome window directly to front on Mac desktop" style="font-weight:600;">🖥 Bring Chrome to Front</button>
+          <button id="browser-auto-refresh-btn" onclick="toggleBrowserAutoRefresh()" style="background:#334155;">⏱ Auto-Refresh: 2s (ON)</button>
+          <button onclick="refreshBrowserView(true)" style="background:#334155;">🔄 Refresh Now</button>
+          <button id="browser-tab-takeover-btn" onclick="toggleTakeover()" style="background:#d97706;font-weight:600;">Owner Takeover</button>
+        </div>
+      </div>
+      <div style="flex:1;min-height:560px;display:flex;align-items:center;justify-content:center;background:#050811;border:1px solid var(--border);border-radius:8px;overflow:auto;position:relative;">
+        <img id="browser-full-preview-img" src="/api/browser/preview?refresh=1" style="max-width:100%;max-height:100%;object-fit:contain;display:block;border-radius:4px;" alt="Full-Screen Managed Chrome Browser View" />
+        <div id="browser-loading-spinner" style="position:absolute;top:12px;right:12px;background:rgba(0,0,0,0.75);padding:6px 12px;border-radius:4px;font-size:12px;color:#60a5fa;display:none;border:1px solid #3b82f6;">Refreshing CDP capture...</div>
+      </div>
     </div>
   </main>
 
@@ -1132,12 +1157,14 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
           <strong>Managed Chrome Browser & Takeover</strong><br/>
           Session: <code>${conv.active_browser_session_id}</code><br/>
           Mode: <span class="badge ${data.browser_takeover ? 'warn' : 'ok'}">${data.browser_takeover ? 'Owner Takeover Active' : 'Automation Active'}</span>
-          <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap;">
-            <button onclick="toggleTakeover(true)">Owner Takeover</button>
-            <button onclick="toggleTakeover(false)">Resume Auto</button>
-            <button onclick="captureBrowserPreview()">Refresh Preview</button>
+          <div style="margin-top:8px;display:flex;gap:5px;flex-wrap:wrap;">
+            <button class="primary" onclick="switchMainTab('browser')" style="font-size:11px;padding:4px 8px;" title="Expand live Chrome view into main tab">⤢ Expand View</button>
+            <button onclick="focusChromeWindow()" style="font-size:11px;padding:4px 8px;" title="Bring Chrome to front on Mac desktop">🖥 Desktop</button>
+            <button onclick="toggleTakeover(true)" style="font-size:11px;padding:4px 8px;">Takeover</button>
+            <button onclick="toggleTakeover(false)" style="font-size:11px;padding:4px 8px;">Resume</button>
+            <button onclick="captureBrowserPreview()" style="font-size:11px;padding:4px 8px;">Refresh</button>
           </div>
-          <img id="browser-preview-img" class="preview" src="/api/browser/preview?ts=${Date.now()}" alt="Live Managed Chrome Preview" />
+          <img id="browser-preview-img" class="preview" onclick="switchMainTab('browser')" style="cursor:pointer;" title="Click to expand full live browser view" src="/api/browser/preview?ts=${Date.now()}" alt="Live Managed Chrome Preview" />
         </div>
       `;
       document.getElementById('left-panel').innerHTML = leftHtml;
@@ -1203,13 +1230,82 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
 
     function switchMainTab(tab) {
       document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-      document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+      document.querySelectorAll('.tab-pane').forEach(p => {
+        p.classList.remove('active');
+        p.style.display = 'none';
+      });
       const btn = document.getElementById('tab-btn-' + tab);
       const pane = document.getElementById('tab-pane-' + tab);
       if (btn) btn.classList.add('active');
-      if (pane) pane.classList.add('active');
+      if (pane) {
+        pane.classList.add('active');
+        pane.style.display = 'flex';
+      }
       if (tab === 'files') {
         loadFilesExplorer();
+      } else if (tab === 'browser') {
+        refreshBrowserView(true);
+        if (!browserAutoRefreshInterval) {
+          toggleBrowserAutoRefresh();
+        }
+      }
+    }
+
+    let browserAutoRefreshInterval = null;
+    function toggleBrowserAutoRefresh() {
+      const btn = document.getElementById('browser-auto-refresh-btn');
+      if (browserAutoRefreshInterval) {
+        clearInterval(browserAutoRefreshInterval);
+        browserAutoRefreshInterval = null;
+        if (btn) btn.innerText = '⏱ Auto-Refresh: OFF';
+      } else {
+        browserAutoRefreshInterval = setInterval(() => {
+          refreshBrowserView(false);
+        }, 2000);
+        if (btn) btn.innerText = '⏱ Auto-Refresh: 2s (ON)';
+      }
+    }
+
+    async function refreshBrowserView(force) {
+      const fullImg = document.getElementById('browser-full-preview-img');
+      const sideImg = document.getElementById('browser-preview-img');
+      const spinner = document.getElementById('browser-loading-spinner');
+      if (spinner) spinner.style.display = 'block';
+      const ts = Date.now();
+      const url = `/api/browser/preview?refresh=${force ? '1' : '0'}&ts=${ts}`;
+      if (fullImg) fullImg.src = url;
+      if (sideImg) sideImg.src = url;
+      setTimeout(() => { if (spinner) spinner.style.display = 'none'; }, 600);
+    }
+
+    async function focusChromeWindow() {
+      try {
+        const res = await fetch('/api/browser/focus', { method: 'POST' });
+        const d = await res.json();
+        if (d.status !== 'focused') {
+          alert('Could not focus Chrome: ' + (d.error || 'unknown'));
+        }
+      } catch (err) {
+        alert('Desktop focus error: ' + err);
+      }
+    }
+
+    async function archiveCurrentEpisode(defaultEpId) {
+      const epId = prompt("Confirm Episode ID to publish and archive:", defaultEpId || "EP03_SWEET_FRUIT_BASKET");
+      if (!epId) return;
+      if (!confirm(`Publish and archive ${epId}?\n\nThis will:\n1. Preserve master script, master audio, and master video in DoroNesh permanent library\n2. Mark episode 'published' in database\n3. Purge intermediate scratch candidate takes\n4. Reset scratch conversational session`)) return;
+      try {
+        const res = await fetch('/api/episode/archive', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ episode_id: epId, conversation_id: activeConversationId })
+        });
+        const data = await res.json();
+        const cleaned = data.cleaned_intermediate_takes ? data.cleaned_intermediate_takes.length : 0;
+        alert(`Episode ${epId} successfully archived and published!\nMaster outputs preserved in DoroNesh permanent library.\nIntermediate candidate takes purged: ${cleaned} files.`);
+        await refreshState();
+      } catch (err) {
+        alert("Archive error: " + err);
       }
     }
 
@@ -1229,9 +1325,42 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
       const steps = wf.steps || {};
       const ch02Steps = ch02Wf.steps || {};
       const epLabel = document.getElementById('tracker-episode-label');
+      const activeEpId = wf.episode_id || 'EP03_SWEET_FRUIT_BASKET';
       if (epLabel) {
-        epLabel.innerText = 'Active: ' + (wf.episode_id || 'EP03_SWEET_FRUIT_BASKET');
+        epLabel.innerText = 'Active: ' + activeEpId;
       }
+
+      const styleCardHtml = `
+        <div class="card" style="background:#0f172a;border:1px solid #3b82f6;margin-bottom:14px;padding:12px 16px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+            <div>
+              <h4 style="margin:0;font-size:14px;color:#60a5fa;">🐣 Kids Channel Standards — Mar &amp; Kuku (mar-kuku-kids)</h4>
+              <span style="font-size:12px;color:#94a3b8;">Target Age: <b>2–4 Years (Toddlers)</b> | Cast: <b>Mar (Gentle Host ~100wpm)</b> &amp; <b>Kuku (Cute Baby Chick Chirps)</b></span>
+            </div>
+            <span class="badge ok">Style Enforced</span>
+          </div>
+          <div style="display:flex;gap:10px;margin-top:10px;font-size:12px;color:#cbd5e1;flex-wrap:wrap;">
+            <div style="background:#1e293b;padding:6px 10px;border-radius:4px;border:1px solid #334155;">
+              ⏱ <b>Interactive Hold:</b> 4.00s (120 frames @ 30fps)
+            </div>
+            <div style="background:#1e293b;padding:6px 10px;border-radius:4px;border:1px solid #334155;">
+              🎵 <b>Music Tempo:</b> 118–124 bpm acoustic rhythm (48kHz Stereo)
+            </div>
+            <div style="background:#1e293b;padding:6px 10px;border-radius:4px;border:1px solid #334155;">
+              🎨 <b>Visual Props:</b> 1254x1254 transparent PNGs
+            </div>
+          </div>
+        </div>
+        <div class="card" style="background:#0f172a;border:1px solid #10b981;margin-bottom:14px;padding:12px 16px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+            <div>
+              <h4 style="margin:0;font-size:14px;color:#34d399;">📦 Master Episode Archive &amp; Post-Publish Lifecycle</h4>
+              <span style="font-size:12px;color:#94a3b8;">Preserve permanent master records in SQLite &amp; DoroNesh library; clean working scratch takes.</span>
+            </div>
+            <button class="primary" onclick="archiveCurrentEpisode('${activeEpId}')" style="background:#059669;border-color:#059669;font-weight:600;">📦 Publish &amp; Archive Episode</button>
+          </div>
+        </div>
+      `;
 
       const stepDefinitions = [
         { id: 'step_1_script', title: '1. Multi-Agent Script Consultation', desc: 'ChatGPT (Master) -> Gemini (Reviewer) -> Manus (Specialist) -> ChatGPT (Synthesis)', action: 'consult_three_agents', check: steps.step_1_chatgpt_master_plan?.status === 'completed' },
@@ -1244,7 +1373,7 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
         { id: 'step_8_youtube', title: '8. YouTube Studio Staging & Upload', desc: 'Stage video, tags, thumbnail, and metadata package', action: 'stage_youtube', check: steps.step_9_youtube_studio_upload?.status === 'completed' },
       ];
 
-      container.innerHTML = stepDefinitions.map((s, idx) => {
+      container.innerHTML = styleCardHtml + stepDefinitions.map((s, idx) => {
         const isDone = s.check;
         return `
           <div class="tracker-item ${isDone ? 'done' : ''}">
@@ -1590,6 +1719,8 @@ def create_studio_app(policy: RootPolicy | None = None) -> Starlette:
                 "workflow": wf_manifest,
                 "ch02_workflow": ch02_manifest,
                 "cancel_event_set": orchestrator.cancel_event.is_set(),
+                "episode_memories": orchestrator.store.list_episode_memories(),
+                "kids_channel_standard": KIDS_CHANNEL_STYLE_STANDARD,
             }
         )
 
@@ -1765,6 +1896,55 @@ def create_studio_app(policy: RootPolicy | None = None) -> Starlette:
         except Exception as exc:
             return JSONResponse({"error": str(exc)}, status_code=500)
 
+    async def api_browser_focus(request: Request) -> JSONResponse:
+        import subprocess
+        try:
+            script = 'tell application "Google Chrome" to activate'
+            res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=5)
+            return JSONResponse({"status": "focused", "returncode": res.returncode})
+        except Exception as exc:
+            return JSONResponse({"status": "error", "error": str(exc)}, status_code=500)
+
+    async def api_episode_archive(request: Request) -> JSONResponse:
+        body = await request.json()
+        ep_id = str(body.get("episode_id") or "EP03_SWEET_FRUIT_BASKET")
+        cid = str(body.get("conversation_id") or "conv-main")
+        wf_folder = orchestrator.workflow.get_episode_folder(ep_id) if hasattr(orchestrator.workflow, "get_episode_folder") else None
+        res = orchestrator.store.archive_and_clean_episode(
+            ep_id,
+            conversation_id=cid,
+            working_folder=wf_folder,
+            archive_receipt={
+                "archived_by": "owner_action",
+                "reason": "episode_published",
+                "timestamp": orchestrator.workflow._utc_now() if hasattr(orchestrator.workflow, "_utc_now") else "",
+            }
+        )
+        return JSONResponse(res)
+
+    async def api_episode_memory(request: Request) -> JSONResponse:
+        if request.method == "GET":
+            ep_id = request.query_params.get("episode_id")
+            if ep_id:
+                mem = orchestrator.store.get_episode_memory(ep_id)
+                return JSONResponse({"episode_memory": mem, "style_standard": KIDS_CHANNEL_STYLE_STANDARD})
+            mems = orchestrator.store.list_episode_memories()
+            return JSONResponse({"episode_memories": mems, "style_standard": KIDS_CHANNEL_STYLE_STANDARD})
+        elif request.method == "POST":
+            body = await request.json()
+            saved = orchestrator.store.save_episode_memory(
+                episode_id=body.get("episode_id", "EP03_SWEET_FRUIT_BASKET"),
+                title=body.get("title", "Episode 003"),
+                channel_id=body.get("channel_id", "mar-kuku-kids"),
+                status=body.get("status", "in_production"),
+                style_guide=body.get("style_guide") or KIDS_CHANNEL_STYLE_STANDARD,
+                master_script_path=body.get("master_script_path", ""),
+                master_audio_path=body.get("master_audio_path", ""),
+                master_video_path=body.get("master_video_path", ""),
+                youtube_url=body.get("youtube_url", ""),
+            )
+            return JSONResponse({"status": "saved", "episode_memory": saved})
+
     app = Starlette(
         routes=[
             Route("/", index_page, methods=["GET"]),
@@ -1774,6 +1954,9 @@ def create_studio_app(policy: RootPolicy | None = None) -> Starlette:
             Route("/api/chat/clear", api_chat_clear, methods=["POST"]),
             Route("/api/browser/takeover", api_browser_takeover, methods=["POST"]),
             Route("/api/browser/preview", api_browser_preview, methods=["GET"]),
+            Route("/api/browser/focus", api_browser_focus, methods=["POST"]),
+            Route("/api/episode/memory", api_episode_memory, methods=["GET", "POST"]),
+            Route("/api/episode/archive", api_episode_archive, methods=["POST"]),
             Route("/api/audio", api_audio, methods=["GET"]),
             Route("/api/video", api_video, methods=["GET"]),
             Route("/api/image", api_image, methods=["GET"]),
