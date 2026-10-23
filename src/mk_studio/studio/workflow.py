@@ -102,6 +102,8 @@ def classify_chat_instruction(message: str) -> str | None:
         return "assemble_palmier"
     if "export" in text or "render" in text or "mp4" in text or "video" in text:
         return "export_mp4"
+    if "comment" in text or "community" in text or "feedback" in text or "reply" in text:
+        return "youtube_community_review"
     if "youtube" in text or "upload" in text or "stage" in text:
         return "stage_youtube"
     if "pipeline" in text or "produce" in text or "full" in text:

@@ -48,3 +48,4 @@ Tech explainers must follow modern YouTube high-retention mechanics:
 - Track 4: Lower-third titles and chapter markers.
 - Audio Track 1: Voiceover master (centered, crisp EQ).
 - Audio Track 2: Ducked ambient soundtrack.
+

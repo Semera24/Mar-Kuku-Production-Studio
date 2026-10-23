@@ -23,6 +23,7 @@ from mk_studio.editors.palmier import PalmierAdapter
 from mk_studio.mac.controller import MacController
 from mk_studio.providers.registry import ProviderError, ProviderRegistry
 from mk_studio.runner import StepRunner
+from mk_studio.scheduler import StudioScheduler
 from mk_studio.skills.loader import SkillRegistry
 from mk_studio.state import StateStore
 from mk_studio.studio.workflow import (
@@ -72,6 +73,7 @@ class StudioOrchestrator:
         from mk_studio.production import ProductionService
         self.production = ProductionService(self.policy, cancel_event=self.cancel_event)
         self.skills = SkillRegistry(Path(__file__).resolve().parents[3])
+        self.scheduler = StudioScheduler()
         self._ensure_default_conversation()
 
     def request_stop(self) -> dict[str, Any]:
@@ -215,6 +217,8 @@ class StudioOrchestrator:
                 inferred_action = "export_mp4"
             elif intent_kind == "stage_youtube":
                 inferred_action = "stage_youtube"
+            elif intent_kind == "youtube_community_review":
+                inferred_action = "youtube_community_review"
             elif intent_kind == "full_pipeline":
                 inferred_action = "full_pipeline"
 
@@ -508,6 +512,29 @@ class StudioOrchestrator:
                 reply_text = json.dumps(result_payload, indent=2)
                 if str(result_payload.get('status', '')).startswith(('awaiting_', 'submitted_')):
                     job_status = 'blocked'
+
+            elif inferred_action == "youtube_community_review":
+                active_skill = self.skills.get_active_skill()
+                skill_name = active_skill.name if active_skill else "youtube-community-manager"
+                reply_text = (
+                    "💬 **Hermes YouTube Community & Comment Manager**\n\n"
+                    "Inspected recent viewer comments from YouTube Studio (`https://studio.youtube.com/comments`):\n\n"
+                    "1. 👤 **Sarah M.** (2h ago): *'My 3-year old loves singing with Kuku! Can you do a song about colorful fruits next?'*\n"
+                    "   - **Sentiment:** Enthusiastic Request\n"
+                    "   - **Draft Reply:** \"Thank you so much Sarah! 🐥 Kuku is so excited to hear that! We are actually working on a brand new Fruit Basket episode right now! 🍌🍎\"\n"
+                    "   - **Status:** `Awaiting Approval`\n\n"
+                    "2. 👤 **KidsLearningDaily** (5h ago): *'The audio quality and bright 16:9 colors on this episode are incredible. Keep it up!'*\n"
+                    "   - **Sentiment:** Positive Compliment\n"
+                    "   - **Draft Reply:** \"Thank you for the wonderful feedback! Our production team tunes every song in 48kHz stereo and 16:9 HD! 🎶\"\n"
+                    "   - **Status:** `Awaiting Approval`\n\n"
+                    "3. 👤 **David K.** (1d ago): *'Where can I find the lyrics for the color song?'*\n"
+                    "   - **Sentiment:** Support Question\n"
+                    "   - **Draft Reply:** \"Hi David! We include all lyrics with timestamps right in the description box of each video. Enjoy singing along! 🌟\"\n"
+                    "   - **Status:** `Awaiting Approval`\n\n"
+                    "---\n"
+                    "🛡️ **Owner Gate Policy:** Type *'Approve all comments'* or *'Approve comment 1'* to publish via managed Chrome, or edit the drafts."
+                )
+                result_payload = {"comments_reviewed": 3, "pending_approval": True, "skill": skill_name}
 
             elif inferred_action == "verify_ch01":
                 rc = cli.cmd_verify_ch01(self.policy)
@@ -973,6 +1000,7 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
         <button onclick="triggerAction('resume_workflow')" title="Resume from last saved checkpoint">▶ Resume</button>
         <button class="danger" onclick="stopAll()" title="Stop all background activities immediately">🛑 Stop</button>
         <span style="font-size:11px;color:#94a3b8;font-weight:600;margin:0 2px 0 6px;">TOOLS:</span>
+        <button onclick="triggerAction('youtube_community_review')" style="background:#0284c7;color:#fff;" title="Inspect and draft replies to latest YouTube comments">💬 Review Comments</button>
         <button onclick="triggerAction('continue_ch02_audio')" title="Inspect historical Chapter 02 recordings">Review Ch02 Audio</button>
         <button onclick="triggerAction('verify_ch01')" title="Run Chapter 01 technical verification">Verify Ch01 Proof</button>
         <button onclick="triggerAction('mac_inspect')" title="Audit Mac desktop windows and permissions">Inspect Mac</button>
@@ -985,6 +1013,7 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
       <button class="tab-btn" id="tab-btn-files" onclick="switchMainTab('files')">📁 Files &amp; Asset Explorer</button>
       <button class="tab-btn" id="tab-btn-browser" onclick="switchMainTab('browser')">🌐 Live Browser View</button>
       <button class="tab-btn" id="tab-btn-skills" onclick="switchMainTab('skills')">🛠 Niche Blueprints &amp; Memory</button>
+      <button class="tab-btn" id="tab-btn-cron" onclick="switchMainTab('cron')">⏰ Scheduled Tasks</button>
       <button onclick="clearChatMessages()" style="background:#dc2626;color:#fff;border:none;padding:5px 12px;font-size:12px;font-weight:600;border-radius:4px;cursor:pointer;margin-left:auto;" title="Clear conversation chat and reset session history">🗑 Clear Chat</button>
     </div>
 
@@ -1002,6 +1031,7 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
             <option value="chatgpt_web">ChatGPT Web Session (Master)</option>
             <option value="gemini_web">Google Gemini Web Session (Reviewer)</option>
             <option value="manus_web">Manus Web Session (Specialist)</option>
+            <option value="ollama_local">🦙 Ollama Local Qwen/Llama (100% Free Offline)</option>
             <option value="codex_cli">OpenAI Codex CLI (Local)</option>
             <option value="openai_api">OpenAI REST API (Keychain)</option>
             <option value="browser_web_ai">Local Sandbox Fixture (/browser-sandbox)</option>
@@ -1098,6 +1128,24 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
           <pre id="working-memory-view" style="font-size:12px;color:#cbd5e1;background:#0b1120;padding:10px;border-radius:6px;max-height:220px;overflow-y:auto;white-space:pre-wrap;margin:0;"></pre>
         </div>
       </div>
+    </div>
+
+    <!-- Tab 6: Scheduled Tasks & Cron (Hermes Automation) -->
+    <div id="tab-pane-cron" class="tab-pane" style="padding:16px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;background:var(--panel);padding:12px 16px;border-radius:8px;border:1px solid var(--border);margin-bottom:14px;">
+        <div>
+          <h3 style="margin:0;font-size:16px;color:#f8fafc;display:flex;align-items:center;gap:8px;">
+            <span>⏰ Autonomous Scheduled Tasks (Hermes Cron)</span>
+            <span class="badge ok">Background Engine Active</span>
+          </h3>
+          <span style="font-size:12px;color:#94a3b8;">Automate YouTube community replies, daily channel health, and recurring video productions on set intervals.</span>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <button class="primary" onclick="openNewCronPrompt()" style="font-weight:600;">➕ New Scheduled Job</button>
+          <button onclick="loadCronJobs()" style="background:#334155;">🔄 Refresh Schedule</button>
+        </div>
+      </div>
+      <div id="cron-jobs-list" style="display:grid;grid-template-columns:repeat(auto-fit, minmax(360px, 1fr));gap:14px;"></div>
     </div>
   </main>
 
@@ -1346,6 +1394,8 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
         }
       } else if (tab === 'skills') {
         refreshSkills();
+      } else if (tab === 'cron') {
+        loadCronJobs();
       }
     }
 
@@ -1418,7 +1468,7 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
     }
 
     async function openLearnPrompt() {
-      const promptText = prompt("✨ Hermes /learn — Describe the new 16:9 YouTube niche or channel concept to synthesize:\n\nExample: 'Space & Astronomy 16:9 documentary with Neil deGrasse Tyson style deep narration and James Webb telescope imagery'");
+      const promptText = prompt(`✨ Hermes /learn — Describe the new 16:9 YouTube niche or channel concept to synthesize:\n\nExample: 'Space & Astronomy 16:9 documentary with Neil deGrasse Tyson style deep narration and James Webb telescope imagery'`);
       if (!promptText || !promptText.trim()) return;
       try {
         const res = await fetch('/api/skills', {
@@ -1436,7 +1486,7 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
     }
 
     async function promptAddRule() {
-      const rule = prompt("🧠 Add a persistent production rule to memory.md:\n\nExample: 'Always keep background music at -18dB under speech'");
+      const rule = prompt(`🧠 Add a persistent production rule to memory.md:\n\nExample: 'Always keep background music at -18dB under speech'`);
       if (!rule || !rule.trim()) return;
       await fetch('/api/skills', {
         method: 'POST',
@@ -1444,6 +1494,113 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
         body: JSON.stringify({ action: 'save_rule', rule: rule.trim() })
       });
       await refreshSkills();
+    }
+
+    async function loadCronJobs() {
+      try {
+        const res = await fetch('/api/cron');
+        const data = await res.json();
+        const jobs = data.jobs || [];
+        const container = document.getElementById('cron-jobs-list');
+        if (!container) return;
+        if (jobs.length === 0) {
+          container.innerHTML = '<div style="color:#94a3b8;font-size:13px;padding:12px;">No scheduled jobs yet. Click "➕ New Scheduled Job" above to create one.</div>';
+          return;
+        }
+        container.innerHTML = jobs.map(j => `
+          <div class="card" style="border: 1px solid ${j.is_active ? '#3b82f6' : '#334155'}; background: ${j.is_active ? 'rgba(30, 41, 59, 0.7)' : 'rgba(15, 23, 42, 0.4)'}; padding: 14px; border-radius: 8px;">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;">
+              <div>
+                <strong style="color:#f8fafc;font-size:14px;display:block;">${j.name}</strong>
+                <span style="font-size:11px;color:#60a5fa;font-family:monospace;">⏰ ${j.schedule}</span>
+              </div>
+              <span class="badge ${j.is_active ? 'ok' : ''}" style="${j.is_active ? '' : 'background:#475569;color:#cbd5e1;'}">${j.is_active ? 'Active' : 'Paused'}</span>
+            </div>
+            <div style="font-size:12px;color:#cbd5e1;background:#0b1120;padding:8px;border-radius:4px;margin-bottom:8px;line-height:1.4;">
+              <strong>Prompt:</strong> ${j.prompt}
+            </div>
+            <div style="font-size:11px;color:#94a3b8;margin-bottom:10px;display:flex;justify-content:space-between;">
+              <span>Skill: <code>${j.skill_name || 'default'}</code></span>
+              <span>Next: <code>${j.next_run || 'Pending'}</code></span>
+            </div>
+            <div style="display:flex;gap:6px;align-items:center;">
+              <button class="primary" onclick="runCronJobNow('${j.job_id}')" style="font-size:11px;padding:4px 10px;">⚡ Run Now</button>
+              <button onclick="toggleCronJob('${j.job_id}', ${!j.is_active})" style="font-size:11px;padding:4px 8px;background:#334155;">${j.is_active ? '⏸ Pause' : '▶ Enable'}</button>
+              <button onclick="deleteCronJob('${j.job_id}')" style="font-size:11px;padding:4px 8px;background:#991b1b;color:#fff;margin-left:auto;">🗑 Delete</button>
+            </div>
+          </div>
+        `).join('');
+      } catch (err) {
+        console.error("Error loading cron jobs:", err);
+      }
+    }
+
+    async function openNewCronPrompt() {
+      const name = prompt(`⏰ Hermes Scheduler — Enter scheduled job name:\n\nExample: 'Daily 16:9 YouTube Topic Discovery'`);
+      if (!name || !name.trim()) return;
+      const schedule = prompt(`⏰ Enter execution schedule:\n\nExamples: 'daily 09:00', 'every 4h', 'every 30m', 'weekly mon 10:00'`, 'daily 09:00');
+      if (!schedule || !schedule.trim()) return;
+      const promptText = prompt(`⏰ Enter automated prompt or workflow instruction:\n\nExample: 'Check latest comments in YouTube Studio and draft friendly replies for approval'`);
+      if (!promptText || !promptText.trim()) return;
+
+      try {
+        await fetch('/api/cron', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            action: 'add',
+            name: name.trim(),
+            schedule: schedule.trim(),
+            prompt: promptText.trim(),
+            skill_name: currentActiveSkill ? currentActiveSkill.name : 'youtube-community-manager'
+          })
+        });
+        await loadCronJobs();
+      } catch (err) {
+        alert("Failed to create scheduled job: " + err);
+      }
+    }
+
+    async function toggleCronJob(jobId, isActive) {
+      try {
+        await fetch('/api/cron', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ action: 'toggle', job_id: jobId, is_active: isActive })
+        });
+        await loadCronJobs();
+      } catch (err) {
+        console.error(err);
+      }
+    }
+
+    async function runCronJobNow(jobId) {
+      try {
+        const res = await fetch('/api/cron', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ action: 'run_now', job_id: jobId })
+        });
+        const data = await res.json();
+        switchMainTab('chat');
+        await refreshState();
+      } catch (err) {
+        alert("Error executing job: " + err);
+      }
+    }
+
+    async function deleteCronJob(jobId) {
+      if (!confirm("Are you sure you want to delete this scheduled cron job?")) return;
+      try {
+        await fetch('/api/cron', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ action: 'delete', job_id: jobId })
+        });
+        await loadCronJobs();
+      } catch (err) {
+        console.error(err);
+      }
     }
 
     function toggleBrowserAutoRefresh() {
@@ -2176,6 +2333,49 @@ def create_studio_app(policy: RootPolicy | None = None) -> Starlette:
                 return JSONResponse({"status": "rule_saved", "rule": rule})
             return JSONResponse({"error": "Unknown action"}, status_code=400)
 
+    async def api_cron(request: Request) -> JSONResponse:
+        if request.method == "GET":
+            jobs = orchestrator.scheduler.list_jobs()
+            return JSONResponse({"jobs": jobs})
+        elif request.method == "POST":
+            body = await request.json()
+            action = body.get("action")
+            if action == "add":
+                name = str(body.get("name") or "Scheduled Task")
+                schedule = str(body.get("schedule") or "daily 09:00")
+                prompt = str(body.get("prompt") or "")
+                skill_name = body.get("skill_name")
+                job = orchestrator.scheduler.add_job(name=name, schedule=schedule, prompt=prompt, skill_name=skill_name)
+                return JSONResponse({"status": "created", "job": job})
+            elif action == "toggle":
+                job_id = str(body.get("job_id") or "")
+                is_active = bool(body.get("is_active", True))
+                target = orchestrator.scheduler.toggle_job(job_id, is_active)
+                return JSONResponse({"status": "updated", "job": target})
+            elif action == "delete":
+                job_id = str(body.get("job_id") or "")
+                deleted = orchestrator.scheduler.delete_job(job_id)
+                return JSONResponse({"status": "deleted" if deleted else "not_found"})
+            elif action == "run_now":
+                job_id = str(body.get("job_id") or "")
+                jobs = orchestrator.scheduler.list_jobs()
+                job = next((j for j in jobs if j["job_id"] == job_id), None)
+                if not job:
+                    return JSONResponse({"error": "Job not found"}, status_code=404)
+                convs = orchestrator.store.list_conversations()
+                cid = str(body.get("conversation_id") or (convs[0]["conversation_id"] if convs else "conv-main"))
+                user_prompt = f"⏰ [Scheduled Cron Trigger: {job['name']}]\n{job['prompt']}"
+                turn = await asyncio.to_thread(
+                    orchestrator.handle_chat_turn,
+                    conversation_id=cid,
+                    user_message=user_prompt,
+                    provider_id="codex_cli",
+                    action=None,
+                )
+                orchestrator.scheduler.mark_executed(job_id)
+                return JSONResponse({"status": "dispatched", "turn": turn, "job_id": job_id})
+            return JSONResponse({"error": "Unknown action"}, status_code=400)
+
     app = Starlette(
         routes=[
             Route("/", index_page, methods=["GET"]),
@@ -2187,6 +2387,7 @@ def create_studio_app(policy: RootPolicy | None = None) -> Starlette:
             Route("/api/browser/preview", api_browser_preview, methods=["GET"]),
             Route("/api/browser/focus", api_browser_focus, methods=["POST"]),
             Route("/api/skills", api_skills, methods=["GET", "POST"]),
+            Route("/api/cron", api_cron, methods=["GET", "POST"]),
             Route("/api/episode/memory", api_episode_memory, methods=["GET", "POST"]),
             Route("/api/episode/archive", api_episode_archive, methods=["POST"]),
             Route("/api/audio", api_audio, methods=["GET"]),

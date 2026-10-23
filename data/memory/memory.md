@@ -15,3 +15,4 @@
 - *Rule 001:* Never trim silence without inspecting actual speech onset boundaries.
 - *Rule 002:* Always duck background soundtrack under voiceover.
 - *Rule 003:* On publishing an episode, archive master files to permanent library and purge intermediate scratch takes.
+

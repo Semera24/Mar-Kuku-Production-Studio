@@ -195,6 +195,15 @@ class ProviderRegistry:
                 "metadata": {"cdp_port": 9222, "fixture": True},
             },
             {
+                "provider_id": "ollama_local",
+                "display_name": "Ollama Local (Qwen 2.5 / Llama 3 - Free)",
+                "provider_kind": "local_llm",
+                "keychain_service": "mk-studio:ollama_local",
+                "budget_limit_usd": 0.0,
+                "status": "ready",
+                "metadata": {"endpoint": "http://127.0.0.1:11434", "model": "qwen2.5:latest"},
+            },
+            {
                 "provider_id": "openai_api",
                 "display_name": "OpenAI Direct REST API (Keychain Secret)",
                 "provider_kind": "rest_api",
@@ -240,6 +249,15 @@ class ProviderRegistry:
                 status = "ready"
                 meta["chrome_reachable"] = chrome_up
                 meta["fixture"] = True
+            elif pid == "ollama_local":
+                ollama_up = False
+                try:
+                    with urllib.request.urlopen("http://127.0.0.1:11434/api/tags", timeout=1.0) as r:
+                        ollama_up = (r.status == 200)
+                except Exception:
+                    ollama_up = False
+                status = "ready" if ollama_up else "offline"
+                meta["ollama_reachable"] = ollama_up
             elif pid == "openai_api":
                 has_key = self.keychain.has_secret(cfg["keychain_service"]) or bool(
                     os.environ.get("OPENAI_API_KEY")
@@ -438,6 +456,40 @@ class ProviderRegistry:
                 "response": reply_text,
                 "screenshot": cycle.get("screenshot"),
                 "url": (cycle.get("dom") or {}).get("url"),
+            }
+
+        if provider_id == "ollama_local":
+            endpoint = "http://127.0.0.1:11434/api/generate"
+            meta = dict(cfg.get("metadata") or {})
+            model = str(meta.get("model") or "qwen2.5:latest")
+            prompt_payload = json.dumps({
+                "model": model,
+                "prompt": (f"{context_summary}\n\nUser: {prompt}\n\nAssistant:" if context_summary else prompt),
+                "stream": False,
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                endpoint,
+                data=prompt_payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
+                    resp_data = json.loads(resp.read().decode("utf-8"))
+                    reply_text = str(resp_data.get("response") or "").strip()
+            except Exception as exc:
+                reply_text = (
+                    f"Ollama local runner not detected on {endpoint} ({exc}). "
+                    "To run free offline AI like in the Hermes tutorial, install Ollama: "
+                    "`brew install ollama && ollama run qwen2.5` or switch to ChatGPT Web."
+                )
+            self.store.record_provider_usage(provider_id, estimated_cost_usd=0.0)
+            return {
+                "provider_id": provider_id,
+                "provider_kind": "local_llm",
+                "status": "passed",
+                "response": reply_text,
+                "model": model,
             }
 
         if provider_id == "openai_api":

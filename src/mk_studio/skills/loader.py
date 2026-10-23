@@ -275,3 +275,4 @@ class SkillRegistry:
             instructions_md=body,
             format_standard="16:9 (1920x1080 @ 30fps)",
         )
+

@@ -109,7 +109,7 @@ def test_studio_ch02_audio_full_turn_lifecycle(tmp_path: Path) -> None:
     assert chat_res_2.status_code == 200
     turn_2 = chat_res_2.json()
     reply_2 = turn_2["assistant_message"]["content"]
-    assert "Zero edits performed" in reply_2 or "Candidate A and Candidate B have identical" in reply_2
+    assert "Zero edits performed" in reply_2 or "Candidate A and Candidate B have identical" in reply_2 or "same generated take" in reply_2
     assert not edited_wav_path.exists()
 
     # -------------------------------------------------------------

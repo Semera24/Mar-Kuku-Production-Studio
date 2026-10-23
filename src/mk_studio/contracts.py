@@ -368,7 +368,7 @@ KIDS_CHANNEL_STYLE_STANDARD = {
     "visual_prop_standard": {
         "dimensions": "1254x1254 transparent PNG",
         "style": "2D vector storybook art, thick clean outlines, high contrast primary/secondary colors",
-        "library_source": "01_ASSETS/PROPS/EPISODE_002_COLOR_GARDEN/01_SOURCES/"
+        "library_source": "01_ASSETS/PROPS/"
     }
 }
 

@@ -13,3 +13,4 @@
 1. Never compromise on 16:9 framing: all video assets, backgrounds, and Palmier compositions must adhere to 1920x1080 or 4K horizontal canvas.
 2. Background music must always be ducked under dialogue (-18dB to -20dB) so spoken words remain crisp and intelligible.
 3. Every production run must be fully checkpointed: no overwriting approved master files.
+
