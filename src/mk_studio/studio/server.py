@@ -686,36 +686,55 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
     body {
       margin: 0;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      background: var(--bg);
+      background: #0f172a;
       color: var(--text);
-      display: grid;
-      grid-template-columns: 320px 1fr 340px;
+      display: flex;
       height: 100vh;
-      min-height: 100vh;
+      width: 100vw;
       overflow: hidden;
     }
-    body.collapse-left { grid-template-columns: 0px 1fr 340px; }
-    body.collapse-right { grid-template-columns: 320px 1fr 0px; }
-    body.collapse-left.collapse-right { grid-template-columns: 0px 1fr 0px; }
-    @media (max-width: 1100px) {
-      body { grid-template-columns: 0px 1fr 0px; }
-      #left-aside { display: none; }
-      #right-aside { display: none; }
-      #left-aside.open {
-        position: fixed; left: 0; top: 0; bottom: 0; width: 320px; z-index: 100;
-        background: #0f172a; box-shadow: 4px 0 20px rgba(0,0,0,0.8); display: flex !important;
-      }
-      #right-aside.open {
-        position: fixed; right: 0; top: 0; bottom: 0; width: 340px; z-index: 100;
-        background: #0f172a; box-shadow: -4px 0 20px rgba(0,0,0,0.8); display: flex !important;
-      }
-    }
-    aside, main {
+    aside {
       display: flex;
       flex-direction: column;
       border-right: 1px solid var(--border);
+      background: #0f172a;
       overflow: hidden;
       min-height: 0;
+    }
+    #left-aside {
+      width: 310px;
+      flex-shrink: 0;
+    }
+    main {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      background: #0b1120;
+      overflow: hidden;
+      min-height: 0;
+    }
+    #right-aside {
+      width: 320px;
+      flex-shrink: 0;
+      border-right: none;
+      border-left: 1px solid var(--border);
+    }
+    body.collapse-left #left-aside { display: none !important; }
+    body.collapse-right #right-aside { display: none !important; }
+    @media (max-width: 1100px) {
+      #left-aside { display: none; }
+      #right-aside { display: none; }
+      #left-aside.open {
+        display: flex !important;
+        position: fixed; left: 0; top: 0; bottom: 0; width: 310px; z-index: 100;
+        background: #0f172a; box-shadow: 4px 0 25px rgba(0,0,0,0.85);
+      }
+      #right-aside.open {
+        display: flex !important;
+        position: fixed; right: 0; top: 0; bottom: 0; width: 320px; z-index: 100;
+        background: #0f172a; box-shadow: -4px 0 25px rgba(0,0,0,0.85);
+      }
     }
     .tab-nav {
       display: flex;
@@ -904,26 +923,26 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
         </div>
         <div style="display:flex;align-items:center;gap:6px;">
           <button onclick="toggleActionDrawer()" id="toggle-actions-btn" style="background:#334155;font-weight:600;padding:5px 9px;font-size:12px;" title="Show/Hide Action Buttons">⚡ Actions ▾</button>
-          <button id="toggle-right-btn" onclick="toggleSidebar('right')" style="padding:5px 9px;font-size:12px;background:#1e293b;" title="Toggle Telemetry Panel">📊 Telemetry</button>
+          <button id="toggle-right-btn" onclick="toggleSidebar('right')" style="padding:5px 9px;font-size:12px;background:#1e293b;" title="Toggle Activity Logs Panel">📊 Activity &amp; Logs</button>
         </div>
       </div>
       <div id="action-buttons-bar" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;width:100%;">
-        <span style="font-size:11px;color:#94a3b8;font-weight:600;margin-right:2px;">PROD:</span>
-        <button onclick="triggerAction('consult_three_agents')" title="ChatGPT (Master) -> Gemini (Reviewer) -> Manus (Specialist)">1-4: 3-Agent Script</button>
-        <button onclick="triggerAction('generate_assets')" title="Generate & intake voiceover, props & thumbnail">6: Assets</button>
-        <button onclick="triggerAction('assemble_palmier')" title="Assemble multi-track timeline in Palmier Pro">7: Palmier</button>
-        <button onclick="triggerAction('export_mp4')" title="Export 1080p30 MP4 and run QA">8: MP4 Export</button>
-        <button onclick="triggerAction('stage_youtube')" title="Stage video & metadata package for YouTube Studio">9: YouTube</button>
-        <button class="primary" onclick="triggerAction('full_pipeline')" title="Run full automated sequence from Script to YouTube staging">Full Pipeline (6-9)</button>
+        <span style="font-size:11px;color:#94a3b8;font-weight:600;margin-right:2px;">PRODUCTION STEPS:</span>
+        <button onclick="triggerAction('consult_three_agents')" title="Consult ChatGPT, Gemini, and Manus to write the script">📝 1. Plan Script</button>
+        <button onclick="triggerAction('flow_music_audio_pipeline')" title="Generate acoustic toddler song in Google Flow Music">🎵 2. Make Music</button>
+        <button onclick="triggerAction('generate_assets')" title="Prepare transparent character PNGs and fruit props">🎨 3. Prepare Props</button>
+        <button onclick="triggerAction('assemble_palmier')" title="Assemble the multi-track video timeline in Palmier Pro">🎬 4. Assemble Video</button>
+        <button onclick="triggerAction('export_mp4')" title="Render native 1080p30 MP4 video and verify quality">📦 5. Export MP4</button>
+        <button onclick="triggerAction('stage_youtube')" title="Stage video package for YouTube Studio">🚀 6. YouTube Stage</button>
+        <button class="primary" onclick="triggerAction('full_pipeline')" title="Run full automated sequence from script to staged video">⚡ Run Entire Episode</button>
         <span style="font-size:11px;color:#94a3b8;font-weight:600;margin:0 2px 0 6px;">CONTROLS:</span>
-        <button onclick="triggerAction('resume_workflow')">Resume</button>
-        <button class="danger" onclick="stopAll()">Stop</button>
+        <button onclick="triggerAction('resume_workflow')" title="Resume from last saved checkpoint">▶ Resume</button>
+        <button class="danger" onclick="stopAll()" title="Stop all background activities immediately">🛑 Stop</button>
         <span style="font-size:11px;color:#94a3b8;font-weight:600;margin:0 2px 0 6px;">TOOLS:</span>
-        <button onclick="triggerAction('continue_ch02_audio')" title="Inspect historical CH02 audio work">Resume CH02 Audio</button>
-        <button onclick="triggerRepairPrompt()" title="Execute audio repair on Candidate B">Approve & Trim 4s</button>
-        <button onclick="triggerAction('verify_ch01')" title="Run Chapter 01 technical regression verification">Verify CH01</button>
-        <button onclick="triggerAction('mac_inspect')" title="Audit Mac desktop and permissions">Inspect Mac</button>
-        <button onclick="triggerAction('browser_demo')" title="Test local offline browser fixture">Sandbox Fixture</button>
+        <button onclick="triggerAction('continue_ch02_audio')" title="Inspect historical Chapter 02 recordings">Review Ch02 Audio</button>
+        <button onclick="triggerAction('verify_ch01')" title="Run Chapter 01 technical verification">Verify Ch01 Proof</button>
+        <button onclick="triggerAction('mac_inspect')" title="Audit Mac desktop windows and permissions">Inspect Mac</button>
+        <button onclick="triggerAction('browser_demo')" title="Test local offline browser fixture">Offline Fixture</button>
       </div>
     </header>
     <div class="tab-nav">
@@ -937,9 +956,13 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
     <div id="tab-pane-chat" class="tab-pane active">
       <div class="scroll" id="chat-messages"></div>
       <div class="composer">
+        <div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;color:#94a3b8;margin-bottom:2px;">
+          <span>Instruction / Prompt:</span>
+          <button type="button" onclick="toggleComposerHeight()" id="toggle-resize-btn" style="background:transparent;border:none;color:#60a5fa;cursor:pointer;padding:0;font-size:11px;">⤢ Expand Box</button>
+        </div>
         <textarea id="chat-input" placeholder="Type e.g. 'Execute episode workflow from WorkingFlowTracker/EP03_SWEET_FRUIT_BASKET.md' or prompt..."></textarea>
-        <div class="composer-row">
-          <select id="provider-select">
+        <div class="composer-row" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <select id="provider-select" style="flex:1;min-width:180px;">
             <option value="chatgpt_web">ChatGPT Web Session (Master)</option>
             <option value="gemini_web">Google Gemini Web Session (Reviewer)</option>
             <option value="manus_web">Manus Web Session (Specialist)</option>
@@ -947,7 +970,11 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
             <option value="openai_api">OpenAI REST API (Keychain)</option>
             <option value="browser_web_ai">Local Sandbox Fixture (/browser-sandbox)</option>
           </select>
-          <button class="primary" id="send-btn" onclick="sendChat()">Send Message</button>
+          <select id="approval-mode-select" style="min-width:170px;background:#1e3a8a;border-color:#3b82f6;color:#fff;font-weight:600;">
+            <option value="ask">✋ Mode: Ask Me First</option>
+            <option value="auto">⚡ Mode: Auto-Approve</option>
+          </select>
+          <button class="primary" id="send-btn" onclick="sendChat()" style="padding:7px 16px;">Send Message</button>
         </div>
       </div>
     </div>
@@ -969,7 +996,7 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
         <div>
           <h3 style="margin:0;font-size:16px;color:#f8fafc;">DoroNesh Library &amp; Working Files</h3>
-          <span style="font-size:12px;color:#94a3b8;">Direct browser media players, prop previews, and script viewers</span>
+          <span style="font-size:12px;color:#94a3b8;">Direct browser media players, prop previews, and Finder reveal</span>
         </div>
         <button onclick="loadFilesExplorer()" style="font-size:12px;">Refresh Files</button>
       </div>
@@ -979,7 +1006,7 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
 
   <aside id="right-aside" style="border-right:none;">
     <header>
-      <span>Live Browser & Telemetry</span>
+      <span>Live Browser &amp; Activity Logs</span>
       <div style="display:flex;align-items:center;gap:6px;">
         <button onclick="refreshState()">Refresh</button>
         <button onclick="toggleSidebar('right')" style="padding:2px 6px;font-size:11px;" title="Close Panel">✕</button>
@@ -1201,12 +1228,16 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
       if (!container) return;
       const steps = wf.steps || {};
       const ch02Steps = ch02Wf.steps || {};
+      const epLabel = document.getElementById('tracker-episode-label');
+      if (epLabel) {
+        epLabel.innerText = 'Active: ' + (wf.episode_id || 'EP03_SWEET_FRUIT_BASKET');
+      }
 
       const stepDefinitions = [
-        { id: 'step_1_script', title: '1. Multi-Agent Script Consultation', desc: 'ChatGPT (Master) -> Gemini (Reviewer) -> Manus (Specialist) -> ChatGPT (Synthesis)', action: 'consult_three_agents', check: steps.step_1_chatgpt_master_plan?.status === 'completed' || ch02Steps.step_script?.status === 'completed' },
-        { id: 'step_2_flow_music', title: '2. Google Flow Music Generation', desc: 'Lyria 3.5 acoustic remix, produce Candidate A and B WAVs', action: 'flow_music_audio_pipeline', check: steps.step_6a_flow_music_audio_pipeline?.status === 'completed' || ch02Steps.step_google_music_generation?.status === 'completed' },
-        { id: 'step_3_review', title: '3. Transcription & Comparative Review', desc: 'Manus Web transcription & ChatGPT comparative audio review', action: 'continue_ch02_audio', check: ch02Steps.step_manus_transcription?.status === 'completed' && ch02Steps.step_chatgpt_comparative_review?.status === 'completed' },
-        { id: 'step_4_repair', title: '4. Interactive Response Hold Calibration', desc: 'Calibrate 4.00s stillness hold gap with FFmpeg precision', action: 'apply_audio_repair', check: ch02Steps.step_audio_repair?.status === 'completed' },
+        { id: 'step_1_script', title: '1. Multi-Agent Script Consultation', desc: 'ChatGPT (Master) -> Gemini (Reviewer) -> Manus (Specialist) -> ChatGPT (Synthesis)', action: 'consult_three_agents', check: steps.step_1_chatgpt_master_plan?.status === 'completed' },
+        { id: 'step_2_flow_music', title: '2. Google Flow Music Generation', desc: 'Lyria 3.5 acoustic remix, produce Candidate A and B WAVs', action: 'flow_music_audio_pipeline', check: steps.step_6a_flow_music_audio_pipeline?.status === 'completed' || steps.step_google_music_generation?.status === 'completed' },
+        { id: 'step_3_review', title: '3. Transcription & Comparative Review', desc: 'Manus Web transcription & ChatGPT comparative audio review', action: 'continue_selected_chapter', check: steps.step_manus_transcription?.status === 'completed' || ch02Steps.step_manus_transcription?.status === 'completed' },
+        { id: 'step_4_repair', title: '4. Interactive Response Hold Calibration', desc: 'Calibrate 4.00s stillness hold gap with FFmpeg precision', action: 'apply_audio_repair', check: steps.step_audio_repair?.status === 'completed' || ch02Steps.step_audio_repair?.status === 'completed' },
         { id: 'step_5_assets', title: '5. Master Asset & Prop Intake', desc: 'Calibrate transparent 1254x1254 character & fruit props into 01_ASSETS', action: 'generate_assets', check: steps.step_6_asset_generation_and_intake?.status === 'completed' },
         { id: 'step_6_palmier', title: '6. Palmier Pro Timeline Assembly', desc: 'Assemble multi-track timeline, clips and markers via local MCP bridge', action: 'assemble_palmier', check: steps.step_7_palmier_editing?.status === 'completed' },
         { id: 'step_7_export', title: '7. Native 1080p30 MP4 Export & QA', desc: 'Render final MP4 video and execute frame-by-frame RMS QA', action: 'export_mp4', check: steps.step_8_final_mp4_export?.status === 'completed' },
@@ -1260,15 +1291,18 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
                   preview = `<img src="/api/image?file=${encodeURIComponent(f.full_path)}" style="height:32px;width:32px;object-fit:cover;border-radius:4px;border:1px solid #334155;" />`;
                 }
                 const kb = (f.size_bytes / 1024).toFixed(1);
+                const enc = encodeURIComponent(f.full_path);
                 return `
                   <div class="file-row">
-                    <div style="display:flex;align-items:center;gap:8px;overflow:hidden;">
+                    <div style="display:flex;align-items:center;gap:8px;overflow:hidden;flex:1;min-width:0;">
                       <span class="badge" style="font-size:10px;text-transform:uppercase;">${f.kind}</span>
-                      <span style="font-weight:600;text-overflow:ellipsis;overflow:hidden;white-space:nowrap;" title="${f.full_path}">${f.rel_path}</span>
+                      <span style="font-weight:600;text-overflow:ellipsis;overflow:hidden;white-space:nowrap;font-size:12px;" title="${f.full_path}">${f.rel_path}</span>
                     </div>
-                    <div style="display:flex;align-items:center;gap:12px;flex-shrink:0;">
+                    <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
                       ${preview}
                       <span style="color:#94a3b8;font-size:11px;">${kb} KB</span>
+                      <button onclick="openFileDesktop('${enc}', true)" style="padding:2px 7px;font-size:10px;background:#334155;color:#fff;" title="Reveal in macOS Finder">📂 Finder</button>
+                      <button onclick="openFileDesktop('${enc}', false)" style="padding:2px 7px;font-size:10px;background:#2563eb;color:#fff;" title="Open with macOS default app">🚀 Open</button>
                     </div>
                   </div>
                 `;
@@ -1287,11 +1321,33 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
       }
     }
 
+    async function openFileDesktop(encodedPath, reveal) {
+      const fullPath = decodeURIComponent(encodedPath);
+      await fetch('/api/files/open', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ path: fullPath, reveal: reveal })
+      });
+    }
+
+    function toggleComposerHeight() {
+      const el = document.getElementById('chat-input');
+      const btn = document.getElementById('toggle-resize-btn');
+      if (el.style.height === '220px') {
+        el.style.height = '80px';
+        btn.innerText = '⤢ Expand Box';
+      } else {
+        el.style.height = '220px';
+        btn.innerText = '⤡ Shrink Box';
+      }
+    }
+
     async function sendChat() {
       const input = document.getElementById('chat-input');
       const text = input.value.trim();
       if (!text) return;
       const provider = document.getElementById('provider-select').value;
+      const mode = (document.getElementById('approval-mode-select') || {}).value || 'ask';
       input.value = '';
       await fetch('/api/chat', {
         method: 'POST',
@@ -1299,7 +1355,10 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
         body: JSON.stringify({
           conversation_id: activeConversationId,
           message: text,
-          provider_id: provider
+          provider_id: provider,
+          action_params: {
+            delegate_to_chatgpt: (mode === 'auto')
+          }
         })
       });
       await refreshState();
@@ -1683,6 +1742,29 @@ def create_studio_app(policy: RootPolicy | None = None) -> Starlette:
             "tracker_files": scan_dir(tracker_root, max_depth=2),
         })
 
+    async def api_files_open(request: Request) -> JSONResponse:
+        import subprocess
+        body = await request.json()
+        raw_path = body.get("path")
+        if not raw_path:
+            return JSONResponse({"error": "Path required"}, status_code=400)
+        p = Path(raw_path).resolve()
+        allowed = list(orchestrator.policy.allowed_read_roots) + [
+            orchestrator.policy.output_root_resolved,
+            orchestrator.policy.production_root_resolved,
+        ]
+        if not any(str(p).startswith(str(prefix)) for prefix in allowed):
+            return JSONResponse({"error": "Access denied: outside allowed roots"}, status_code=403)
+        if not p.exists():
+            return JSONResponse({"error": f"File not found: {p}"}, status_code=404)
+        reveal = bool(body.get("reveal", False))
+        cmd = ["/usr/bin/open", "-R", str(p)] if reveal else ["/usr/bin/open", str(p)]
+        try:
+            subprocess.run(cmd, check=False)
+            return JSONResponse({"status": "opened", "path": str(p), "revealed": reveal})
+        except Exception as exc:
+            return JSONResponse({"error": str(exc)}, status_code=500)
+
     app = Starlette(
         routes=[
             Route("/", index_page, methods=["GET"]),
@@ -1696,6 +1778,7 @@ def create_studio_app(policy: RootPolicy | None = None) -> Starlette:
             Route("/api/video", api_video, methods=["GET"]),
             Route("/api/image", api_image, methods=["GET"]),
             Route("/api/files", api_files, methods=["GET"]),
+            Route("/api/files/open", api_files_open, methods=["POST"]),
             Route("/api/stop", api_stop, methods=["POST"]),
         ]
     )
