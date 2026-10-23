@@ -278,3 +278,4 @@ class TelegramService:
             )
         except Exception as exc:
             self.send_message(f"❌ <b>Error executing command:</b> {exc}")
+

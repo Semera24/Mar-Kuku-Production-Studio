@@ -70,3 +70,4 @@ def capture_screen(out_path: Path) -> bool:
             res = subprocess.run([scrot, str(out_path)], check=False)
             return res.returncode == 0 and out_path.is_file()
     return False
+

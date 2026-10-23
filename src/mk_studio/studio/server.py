@@ -251,7 +251,22 @@ class StudioOrchestrator:
         job_status = "succeeded"
 
         try:
-            if user_message.strip().startswith("/learn"):
+            if user_message.strip().startswith("/telegram"):
+                custom_msg = user_message.strip()[9:].strip() or "Test ping from Mar & Kuku Studio chat!"
+                res = self.telegram.send_message(f"📱 <b>Studio Alert / Test Message:</b>\n\n{custom_msg}")
+                if res.get("ok"):
+                    reply_text = (
+                        f"📱 **Telegram Message Sent Successfully to your phone!**\n\n"
+                        f"- **Bot:** `@mar_kuku_studio_bot`\n"
+                        f"- **Recipient ID:** `{self.telegram.get_config().get('chat_id')}`\n"
+                        f"- **Message Sent:** \"{custom_msg}\"\n\n"
+                        f"Check your Telegram app right now — you should see this message from your bot!"
+                    )
+                else:
+                    reply_text = f"⚠️ **Failed to send Telegram message:** {res.get('error')}. Please verify bot token and chat ID in the Telegram Gateway modal."
+                result_payload = {"telegram_sent": res.get("ok", False), "response": res}
+
+            elif user_message.strip().startswith("/learn"):
                 instruction = user_message.strip()[6:].strip()
                 if not instruction:
                     reply_text = "To use the `/learn` command, provide an instruction, rule, or niche description. Example:\n- `/learn In Tech Explainers, always keep the opening hook under 8 seconds.`\n- `/learn Niche: Space & Astronomy 16:9 documentary with Neil deGrasse Tyson style narration.`"

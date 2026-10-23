@@ -1,8 +1,8 @@
 {
-  "bot_token": "",
-  "chat_id": "",
-  "enabled": false,
+  "bot_token": "8608114450:AAFfCI9La81EE65LSX_7PHWt-IJ3Fu7r5lo",
+  "chat_id": "459265863",
+  "enabled": true,
   "notify_on_step_complete": true,
   "notify_on_approval_needed": true,
-  "created_at": 1792789340.255548
+  "updated_at": 1792790690.0
 }
