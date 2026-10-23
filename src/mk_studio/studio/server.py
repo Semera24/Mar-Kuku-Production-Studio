@@ -1114,6 +1114,9 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
 
   <script>
     let activeConversationId = 'conv-main';
+    let installedSkills = [];
+    let currentActiveSkill = null;
+    let browserAutoRefreshInterval = null;
 
     function toggleSidebar(side) {
       const el = document.getElementById(side + '-aside');
@@ -1136,31 +1139,34 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
     }
 
     async function refreshState() {
-      const res = await fetch(`/api/state?conversation_id=${encodeURIComponent(activeConversationId)}`);
-      const data = await res.json();
-      const conv = data.conversation || {};
-      if (conv.conversation_id) {
-        activeConversationId = conv.conversation_id;
-      }
-      const wf = data.workflow || {};
-      const wfSteps = wf.steps || {};
-      document.getElementById('conv-title').innerText = conv.title || activeConversationId;
-      document.getElementById('provider-select').value = conv.active_provider_id || 'codex_cli';
-
-      if (data.active_skill) {
-        currentActiveSkill = data.active_skill;
-      }
-      if (data.skills && data.skills.length) {
-        installedSkills = data.skills;
-        const selector = document.getElementById('niche-selector');
-        if (selector && selector.options.length !== installedSkills.length) {
-          selector.innerHTML = installedSkills.map(s => `
-            <option value="${s.name}" ${s.name === currentActiveSkill?.name ? 'selected' : ''}>
-              🎬 ${s.title}
-            </option>
-          `).join('');
+      try {
+        const res = await fetch(`/api/state?conversation_id=${encodeURIComponent(activeConversationId)}`);
+        const data = await res.json();
+        const conv = data.conversation || {};
+        if (conv.conversation_id) {
+          activeConversationId = conv.conversation_id;
         }
-      }
+        const wf = data.workflow || {};
+        const wfSteps = wf.steps || {};
+        const convTitleEl = document.getElementById('conv-title');
+        if (convTitleEl) convTitleEl.innerText = conv.title || activeConversationId;
+        const provEl = document.getElementById('provider-select');
+        if (provEl) provEl.value = conv.active_provider_id || 'codex_cli';
+
+        if (data.active_skill) {
+          currentActiveSkill = data.active_skill;
+        }
+        if (data.skills && data.skills.length) {
+          installedSkills = data.skills;
+          const selector = document.getElementById('niche-selector');
+          if (selector && selector.options.length !== installedSkills.length) {
+            selector.innerHTML = installedSkills.map(s => `
+              <option value="${s.name}" ${s.name === (currentActiveSkill ? currentActiveSkill.name : '') ? 'selected' : ''}>
+                🎬 ${s.title}
+              </option>
+            `).join('');
+          }
+        }
 
       const ch02Wf = data.ch02_workflow || {};
       const ch02Steps = ch02Wf.steps || {};
@@ -1313,6 +1319,9 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
       `;
       document.getElementById('right-panel').innerHTML = rightHtml;
       renderLiveTracker(wf, ch02Wf);
+      } catch (err) {
+        console.error("Error in refreshState:", err);
+      }
     }
 
     function switchMainTab(tab) {
@@ -1339,9 +1348,6 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
         refreshSkills();
       }
     }
-
-    let installedSkills = [];
-    let currentActiveSkill = null;
 
     async function refreshSkills() {
       try {
@@ -1440,7 +1446,6 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
       await refreshSkills();
     }
 
-    let browserAutoRefreshInterval = null;
     function toggleBrowserAutoRefresh() {
       const btn = document.getElementById('browser-auto-refresh-btn');
       if (browserAutoRefreshInterval) {
