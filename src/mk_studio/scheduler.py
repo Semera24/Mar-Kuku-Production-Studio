@@ -44,6 +44,17 @@ class StudioScheduler:
         if not self.jobs_file.is_file():
             default_jobs = [
                 {
+                    "job_id": "cron-weekly-full-production",
+                    "name": "Weekly Full Episode Auto-Production (16:9)",
+                    "schedule": "weekly mon 09:00",
+                    "prompt": "Run full automated sequence from script planning to staged broadcast MP4 for active channel.",
+                    "skill_name": "mar-kuku-kids",
+                    "is_active": True,
+                    "last_run": None,
+                    "next_run": "Monday at 09:00 AM",
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                },
+                {
                     "job_id": "cron-daily-yt-review",
                     "name": "Daily YouTube Comment Review",
                     "schedule": "daily 09:00",
@@ -52,6 +63,17 @@ class StudioScheduler:
                     "is_active": True,
                     "last_run": None,
                     "next_run": "Tomorrow at 09:00 AM",
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                },
+                {
+                    "job_id": "cron-daily-analytics-digest",
+                    "name": "Daily YouTube Studio Analytics Digest",
+                    "schedule": "daily 20:00",
+                    "prompt": "Scan YouTube Studio performance metrics (views, retention, CTR) and push executive card to Telegram.",
+                    "skill_name": "youtube-community-manager",
+                    "is_active": True,
+                    "last_run": None,
+                    "next_run": "Today at 08:00 PM",
                     "created_at": datetime.now(timezone.utc).isoformat(),
                 },
                 {

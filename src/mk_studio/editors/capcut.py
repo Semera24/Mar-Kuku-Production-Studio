@@ -236,3 +236,4 @@ class CapCutAdapter:
         receipt_file = output_dir / f"07_capcut_editing_receipt.json"
         receipt_file.write_text(json.dumps(receipt, indent=2), encoding="utf-8")
         return receipt
+

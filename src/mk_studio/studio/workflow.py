@@ -104,6 +104,8 @@ def classify_chat_instruction(message: str) -> str | None:
         return "export_mp4"
     if "comment" in text or "community" in text or "feedback" in text or "reply" in text:
         return "youtube_community_review"
+    if "analytics" in text or "metrics" in text or "performance" in text or "digest" in text:
+        return "youtube_analytics_digest"
     if "youtube" in text or "upload" in text or "stage" in text:
         return "stage_youtube"
     if "pipeline" in text or "produce" in text or "full" in text:
