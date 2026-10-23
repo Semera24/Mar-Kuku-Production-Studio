@@ -737,12 +737,69 @@ def generate_episode_assets(
     manifest_path = output_dir / f"asset_manifest_{episode_id.lower()}.json"
     calib_path = output_dir / f"registration_{episode_id.lower()}.json"
 
+    # 6. Audio-Driven Lip-Sync Viseme Generation
+    lipsync_data = None
+    try:
+        from mk_studio.lipsync import CharacterLipSyncEngine
+        lipsync_engine = CharacterLipSyncEngine()
+        h_range = (h_start, h_end) if is_long_form else (501, 621)
+        lipsync_data = lipsync_engine.generate_lipsync_manifest(
+            wav_path=audio_path,
+            output_dir=output_dir,
+            episode_id=episode_id,
+            hold_range_frames=h_range,
+        )
+        lipsync_engine.render_viseme_mouth_sprites(output_dir / "visemes")
+    except Exception as e:
+        lipsync_data = {"error": str(e)}
+
+    # 7. Bouncing Karaoke Subtitle Generation
+    karaoke_data = None
+    try:
+        from mk_studio.subtitles import KaraokeSubtitleGenerator
+        sub_cues = []
+        if dialogue_cues:
+            for c in dialogue_cues:
+                sub_cues.append({
+                    "start": c.get("start", 0.0),
+                    "end": c.get("end", 3.0),
+                    "text": c.get("text", ""),
+                    "is_interactive": "hold" in str(c.get("text", "")).lower() or "pause" in str(c.get("text", "")).lower(),
+                })
+        else:
+            sub_cues = [
+                {"start": 1.0, "end": 7.0, "text": "Look at the red flower in the garden!"},
+                {"start": 7.2, "end": 14.0, "text": "Can you say red? Red flower!"},
+                {"start": 16.7, "end": 20.7, "text": "What color is this flower?", "is_interactive": True},
+                {"start": 21.0, "end": 29.5, "text": "Yellow and purple flowers are dancing! Yay!"},
+            ]
+        sub_gen = KaraokeSubtitleGenerator()
+        karaoke_data = sub_gen.generate_subtitles(sub_cues, output_dir=output_dir, stem_name=f"{episode_id.lower()}_karaoke")
+    except Exception as e:
+        karaoke_data = {"error": str(e)}
+
+    # 8. High-CTR 16:9 Thumbnail A/B Variants
+    thumb_variants_data = None
+    try:
+        from mk_studio.thumbnails import ThumbnailGenerator
+        thumb_gen = ThumbnailGenerator()
+        thumb_variants_data = thumb_gen.generate_all_variants(
+            episode_title=episode_title or "Count 1, 2, 3 Flowers!",
+            subtitle="16:9 Toddler Sing-Along & Colors",
+            output_dir=output_dir,
+        )
+    except Exception as e:
+        thumb_variants_data = {"error": str(e)}
+
     intake_receipt = {
         "step": "step_6_asset_generation_and_intake",
         "episode_id": episode_id,
         "status": "completed",
         "audio_provider": audio_provider,
         "is_test_provider": is_test_provider,
+        "lipsync_manifest": lipsync_data.get("manifest_path") if lipsync_data else None,
+        "karaoke_subtitles": karaoke_data,
+        "thumbnail_variants": thumb_variants_data,
         "audio_master": {
             "path": str(audio_path),
             "sha256": compute_sha256(audio_path),

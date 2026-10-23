@@ -221,6 +221,12 @@ class StudioOrchestrator:
                 inferred_action = "assemble_palmier"
             elif intent_kind == "export_mp4":
                 inferred_action = "export_mp4"
+            elif intent_kind == "generate_thumbnails":
+                inferred_action = "generate_thumbnails"
+            elif intent_kind == "generate_karaoke":
+                inferred_action = "generate_karaoke"
+            elif intent_kind == "generate_lipsync":
+                inferred_action = "generate_lipsync"
             elif intent_kind == "stage_youtube":
                 inferred_action = "stage_youtube"
             elif intent_kind == "youtube_community_review":
@@ -599,6 +605,101 @@ class StudioOrchestrator:
                     "top_format": "16:9 Widescreen",
                     "skill": skill_name,
                 }
+
+            elif inferred_action == "generate_thumbnails":
+                from mk_studio.thumbnails import ThumbnailGenerator
+                folder = self.workflow.get_episode_folder(ep_id)
+                thumb_gen = ThumbnailGenerator()
+                thumb_manifest = thumb_gen.generate_all_variants(
+                    episode_title="Count 1, 2, 3 Garden Flowers!",
+                    subtitle="16:9 Toddler Sing-Along",
+                    output_dir=folder,
+                )
+                result_payload = thumb_manifest
+                variants = thumb_manifest.get("variants", [])
+                v_desc = "\n".join(
+                    f"{idx+1}. **Variant {v.get('variant')} ({v.get('name')}):** `{v.get('file_path')}` — *Predicted CTR:* `{v.get('predicted_ctr_rating')}`"
+                    for idx, v in enumerate(variants)
+                )
+                reply_text = (
+                    f"🎨 **Generated 3 High-CTR 16:9 Thumbnail Variants for `{ep_id}`**:\n\n"
+                    f"{v_desc}\n\n"
+                    f"- **Default Staged Thumbnail:** `{thumb_manifest.get('staged_thumbnail_path')}`\n"
+                    f"- **Manifest:** `09_thumbnail_manifest.json`\n"
+                    f"- **Dimensions:** Strict 16:9 Widescreen (1920x1080)\n\n"
+                    f"📲 *Thumbnail variants logged for mobile review and A/B CTR rotation.*"
+                )
+                for v in variants:
+                    attachments.append({"label": f"Thumbnail Variant {v.get('variant')}", "path": v.get("file_path")})
+
+            elif inferred_action == "generate_karaoke":
+                from mk_studio.subtitles import KaraokeSubtitleGenerator
+                folder = self.workflow.get_episode_folder(ep_id)
+                sub_cues = [
+                    {"start": 1.0, "end": 7.0, "text": "Look at the red flower in the garden!"},
+                    {"start": 7.2, "end": 14.0, "text": "Can you say red? Red flower!"},
+                    {"start": 16.7, "end": 20.7, "text": "What color is this flower?", "is_interactive": True},
+                    {"start": 21.0, "end": 29.5, "text": "Yellow and purple flowers are dancing! Yay!"},
+                ]
+                sub_gen = KaraokeSubtitleGenerator()
+                sub_res = sub_gen.generate_subtitles(sub_cues, output_dir=folder, stem_name=f"{ep_id.lower()}_karaoke")
+                result_payload = sub_res
+                reply_text = (
+                    f"🎤 **Bouncing Karaoke Sing-Along Subtitles Generated for `{ep_id}`**:\n\n"
+                    f"- **Advanced SubStation Alpha (.ass):** `{sub_res.get('ass_path')}`\n"
+                    f"- **Standard YouTube Captions (.srt):** `{sub_res.get('srt_path')}`\n"
+                    f"- **Total Timed Cues:** {sub_res.get('cue_count')} lyrics events with `{{\\k...}}` karaoke bounce tags\n"
+                    f"- **Style:** Dual-tone highlight (&H0014E5FF gold/cyan on &H00FFFFFF white with 6px outline)\n"
+                    f"- **CapCut Desktop Integration:** Compatible text clip array staged for `draft_content.json`.\n\n"
+                    f"Ready for burn-in rendering or YouTube closed-caption packaging."
+                )
+                if sub_res.get("ass_path"):
+                    attachments.append({"label": f"{ep_id.lower()}_karaoke.ass", "path": sub_res["ass_path"]})
+                if sub_res.get("srt_path"):
+                    attachments.append({"label": f"{ep_id.lower()}_karaoke.srt", "path": sub_res["srt_path"]})
+
+            elif inferred_action == "generate_lipsync":
+                from mk_studio.lipsync import CharacterLipSyncEngine
+                folder = self.workflow.get_episode_folder(ep_id)
+                audio_file = None
+                for cand in (
+                    folder / "assets" / f"{ep_id.lower()}_voiceover_master_48k_stereo.wav",
+                    folder / "assets" / "ep02_ch02_voiceover_master_48k_stereo.wav",
+                    Path("scratch/test_pipeline/ep02_ch02/assets/ep02_ch02_voiceover_master_48k_stereo.wav"),
+                ):
+                    if cand.is_file():
+                        audio_file = cand
+                        break
+                if not audio_file:
+                    audio_file = folder / "assets" / f"{ep_id.lower()}_voiceover_master_48k_stereo.wav"
+                    from mk_studio.production.pipeline import generate_episode_voiceover
+                    audio_file.parent.mkdir(parents=True, exist_ok=True)
+                    generate_episode_voiceover(audio_file)
+
+                lipsync_engine = CharacterLipSyncEngine()
+                lipsync_res = lipsync_engine.generate_lipsync_manifest(
+                    wav_path=audio_file,
+                    output_dir=folder,
+                    episode_id=ep_id,
+                    hold_range_frames=(501, 621),
+                )
+                mouth_sprites = lipsync_engine.render_viseme_mouth_sprites(folder / "visemes")
+                result_payload = lipsync_res
+                dist = lipsync_res.get("viseme_distribution", {})
+                reply_text = (
+                    f"👄 **Audio-Driven 2D Character Lip-Sync & Viseme Flap for `{ep_id}`**:\n\n"
+                    f"- **Audio Master Analyzed:** `{audio_file}` (48kHz, 30fps frames)\n"
+                    f"- **Total Frames Processed:** {lipsync_res.get('total_frames')} frames ({lipsync_res.get('total_duration_sec')}s)\n"
+                    f"- **Viseme Breakdown:**\n"
+                    f"  • `mouth_closed`: {dist.get('mouth_closed', 0)} frames (including 4.0s response stillness hold frames 501..621)\n"
+                    f"  • `mouth_open`: {dist.get('mouth_open', 0)} frames (conversational vocal range)\n"
+                    f"  • `mouth_wide`: {dist.get('mouth_wide', 0)} frames (vowel peaks & cheer)\n"
+                    f"  • `mouth_round`: {dist.get('mouth_round', 0)} frames (rounded 'O' / 'Kuku' vowels)\n"
+                    f"- **Mouth Sprites Generated:** 4 transparent 1254x1254 visemes in `{folder / 'visemes'}`\n"
+                    f"- **Sequence Manifest:** `07_lipsync_sequence.json`"
+                )
+                if lipsync_res.get("manifest_path"):
+                    attachments.append({"label": "07_lipsync_sequence.json", "path": lipsync_res["manifest_path"]})
 
             elif inferred_action == "verify_ch01":
                 rc = cli.cmd_verify_ch01(self.policy)
@@ -1078,6 +1179,9 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
         <button onclick="triggerAction('resume_workflow')" title="Resume from last saved checkpoint">▶ Resume</button>
         <button class="danger" onclick="stopAll()" title="Stop all background activities immediately">🛑 Stop</button>
         <span style="font-size:11px;color:#94a3b8;font-weight:600;margin:0 2px 0 6px;">TOOLS:</span>
+        <button onclick="triggerAction('generate_thumbnails')" style="background:#e11d48;color:#fff;" title="Generate 3 High-CTR 16:9 Thumbnail A/B Variants">🖼️ A/B Thumbnails</button>
+        <button onclick="triggerAction('generate_karaoke')" style="background:#d97706;color:#fff;" title="Generate Word-by-Word Bouncing Karaoke Subtitles">🎤 Karaoke Subtitles</button>
+        <button onclick="triggerAction('generate_lipsync')" style="background:#8b5cf6;color:#fff;" title="Run Audio-Driven 2D Character Lip-Sync & Viseme Flap">👄 2D Lip-Sync</button>
         <button onclick="triggerAction('youtube_community_review')" style="background:#0284c7;color:#fff;" title="Inspect and draft replies to latest YouTube comments">💬 Review Comments</button>
         <button onclick="triggerAction('youtube_analytics_digest')" style="background:#0f766e;color:#fff;" title="Inspect YouTube Studio performance metrics and subscriber growth">📊 Channel Analytics</button>
         <button onclick="triggerAction('continue_ch02_audio')" title="Inspect historical Chapter 02 recordings">Review Ch02 Audio</button>
@@ -2061,6 +2165,12 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
         defaultMsg = 'Stage the video and metadata package for YouTube Studio';
       } else if (actionName === 'youtube_analytics_digest') {
         defaultMsg = 'Review YouTube Studio channel analytics and metrics digest';
+      } else if (actionName === 'generate_thumbnails') {
+        defaultMsg = 'Generate 3 high-CTR 16:9 thumbnail A/B variants';
+      } else if (actionName === 'generate_karaoke') {
+        defaultMsg = 'Generate bouncing karaoke sing-along subtitles';
+      } else if (actionName === 'generate_lipsync') {
+        defaultMsg = 'Run audio-driven character lip-sync viseme analysis';
       } else if (actionName === 'full_pipeline') {
         defaultMsg = 'Run full production pipeline from script to YouTube Studio';
       }

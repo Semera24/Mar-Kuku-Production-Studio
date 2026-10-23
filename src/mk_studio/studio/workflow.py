@@ -102,6 +102,12 @@ def classify_chat_instruction(message: str) -> str | None:
         return "assemble_palmier"
     if "export" in text or "render" in text or "mp4" in text or "video" in text:
         return "export_mp4"
+    if "thumbnail" in text or "a/b" in text:
+        return "generate_thumbnails"
+    if "karaoke" in text or "subtitle" in text or "caption" in text:
+        return "generate_karaoke"
+    if "lipsync" in text or "lip sync" in text or "mouth" in text or "viseme" in text:
+        return "generate_lipsync"
     if "comment" in text or "community" in text or "feedback" in text or "reply" in text:
         return "youtube_community_review"
     if "analytics" in text or "metrics" in text or "performance" in text or "digest" in text:

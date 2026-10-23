@@ -212,10 +212,36 @@ class CapCutAdapter:
         output_dir: Path,
         audio_master_path: Path | None = None,
         props_dir: Path | None = None,
+        karaoke_cues: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Assembles native 16:9 CapCut project for the episode with audio, video, and prop tracks."""
         proj_name = f"MK_Studio_{episode_id}_16x9"
         proj_path = self.create_project(proj_name, ratio="16:9", width=1920, height=1080, fps=30)
+
+        # Inject karaoke subtitles if available
+        if karaoke_cues:
+            from mk_studio.subtitles import KaraokeSubtitleGenerator
+            text_clips = KaraokeSubtitleGenerator().convert_to_capcut_text_track(karaoke_cues)
+            draft_file = proj_path / "draft_content.json"
+            if draft_file.is_file():
+                draft_data = json.loads(draft_file.read_text(encoding="utf-8"))
+                draft_data["materials"]["texts"].extend(text_clips)
+                track_segments = [
+                    {
+                        "id": f"seg-{tc['id']}",
+                        "material_id": tc["id"],
+                        "target_timerange": tc["target_timerange"],
+                        "render_index": 100,
+                    }
+                    for tc in text_clips
+                ]
+                draft_data["tracks"].append({
+                    "id": "track-subtitles-karaoke",
+                    "type": "text",
+                    "segments": track_segments,
+                    "flag": 0,
+                })
+                draft_file.write_text(json.dumps(draft_data, indent=2), encoding="utf-8")
 
         # Receipt artifact
         receipt = {

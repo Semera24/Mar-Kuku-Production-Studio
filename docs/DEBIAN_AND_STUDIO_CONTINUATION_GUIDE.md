@@ -199,6 +199,12 @@ Here is the complete inventory of features, bug fixes, and infrastructure comple
 - Restored full reactivity to all dropdowns, action buttons, and modal dialogs.
 - Fixed layout collapse issues on narrow viewports.
 
+### Phase 8: Advanced Automation Engines (Thumbnails, Karaoke, Lip-Sync)
+- **16:9 Thumbnail A/B Studio (`src/mk_studio/thumbnails.py`):** Automatically designs 3 distinct 1920x1080 thumbnail variants (Sunshine Yellow Energy, Sky Blue & Play, Royal Violet Magic) with high-contrast text strokes, character poses, and CTR predictions.
+- **Bouncing Karaoke Engine (`src/mk_studio/subtitles.py`):** Generates `.ass` subtitles with `{\k...}` word-level highlighting, standard `.srt`, and native CapCut Desktop text track clips with bounce-in animations.
+- **Audio-Driven 2D Lip-Sync (`src/mk_studio/lipsync.py`):** 30fps RMS audio energy analyzer mapping 48kHz voice tracks to 4 viseme mouth shapes (`mouth_closed`, `mouth_open`, `mouth_wide`, `mouth_round`), strictly enforcing stillness during the 4.0s response hold gap.
+- **Direct UI Triggers:** Added `🖼️ A/B Thumbnails`, `🎤 Karaoke Subtitles`, and `👄 2D Lip-Sync` buttons to the header TOOLS menu.
+
 ---
 
 ## 6. Codebase Architecture & Key Files
@@ -220,6 +226,7 @@ mar-kuku-production-studio/
 │   ├── cli.py / cli_app.py         # Terminal commands (serve, verify, assemble)
 │   ├── config.py                   # Central paths, timeouts, and video dimensions
 │   ├── delivery.py                 # YouTube Studio CDP browser automation
+│   ├── lipsync.py                  # Audio-driven 2D character mouth viseme analyzer
 │   ├── os_compat.py                # Cross-platform OS abstraction (Linux/macOS/Win)
 │   ├── production/                 # Audio calibration, asset intake, FFmpeg QA
 │   │   ├── pipeline.py             # Full episode staging orchestrator
@@ -233,8 +240,10 @@ mar-kuku-production-studio/
 │   ├── studio/
 │   │   ├── server.py               # Starlette/FastHTML web app, API & WebSockets
 │   │   └── workflow.py             # 9-step production state machine & manifests
-│   └── telegram/
-│       └── bot.py                  # Mobile Telegram 2-way bot gateway
+│   ├── subtitles.py                # Bouncing karaoke (.ass/.srt/CapCut) engine
+│   ├── telegram/
+│   │   └── bot.py                  # Mobile Telegram 2-way bot gateway
+│   └── thumbnails.py               # 16:9 High-CTR A/B thumbnail generator
 └── tests/                          # Automated unit and integration test suite
 ```
 
@@ -250,3 +259,4 @@ When you are ready to expand the studio further on Debian 13, here are the most 
 
 ---
 *End of Master Continuation Guide. Happy Creating with Mar & Kuku Studio!*
+
