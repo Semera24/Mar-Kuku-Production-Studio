@@ -152,11 +152,19 @@ class StudioWorkflowEngine:
 
     def load_manifest(self, episode_id=DEFAULT_TEST_EPISODE_ID):
         path = self.manifest_path(episode_id)
+        folder = self.get_episode_folder(episode_id)
+        from mk_studio.production.recipe import load_recipe
+        recipe = load_recipe(folder, episode_id)
         if path.exists():
-            return json.loads(path.read_text())  # Corruption must not silently create a new run.
+            data = json.loads(path.read_text())
+            if "recipe" not in data:
+                data["recipe"] = recipe.model_dump()
+            return data
         return {'workflow_id': f'wf-{episode_id.lower()}', 'episode_id': episode_id,
                 'dedicated_folder': str(path.parent), 'status': 'not_started',
                 'initial_instruction': '', 'created_at': _utc_now(),
+                'recipe': recipe.model_dump(),
+                'recipe_doc_path': str(folder / "00_PRODUCTION_RECIPE.md"),
                 'conversation_references': {}, 'steps': {k: {'status': 'pending', 'submission_count': 0}
                                                       for k in self.STEP_NAMES},
                 'script_revisions': [], 'artifacts': []}
@@ -561,7 +569,11 @@ class StudioWorkflowEngine:
         if not m.get('current_script_path'):
             raise BrowserControlError('Complete consultation and save script before running production pipeline')
         
-        # Step 6
+        folder = self.get_episode_folder(episode_id)
+        from mk_studio.production.recipe import load_recipe
+        recipe = load_recipe(folder, episode_id)
+
+        # Step 6: Asset Generation, Lip-Sync & Props
         if not self._step_already_completed(m['steps'].get('step_6_asset_generation_and_intake', {})):
             self._check_stop(m, episode_id, 'before_step_6')
             m = self.run_asset_generation(episode_id)
@@ -569,7 +581,7 @@ class StudioWorkflowEngine:
                 self.cancel_event.set()
             self._check_stop(m, episode_id, 'after_step_6')
 
-        # Step 7
+        # Step 7: Timeline Assembly (CapCut & Palmier)
         if not self._step_already_completed(m['steps'].get('step_7_palmier_editing', {})):
             self._check_stop(m, episode_id, 'before_step_7')
             m = self.run_palmier_assembly(episode_id)
@@ -577,7 +589,7 @@ class StudioWorkflowEngine:
                 self.cancel_event.set()
             self._check_stop(m, episode_id, 'after_step_7')
 
-        # Step 8
+        # Step 8: MP4 Export & Sub-frame QA
         if not self._step_already_completed(m['steps'].get('step_8_final_mp4_export', {})):
             self._check_stop(m, episode_id, 'before_step_8')
             m = self.run_final_mp4_export(episode_id)
@@ -585,13 +597,17 @@ class StudioWorkflowEngine:
                 self.cancel_event.set()
             self._check_stop(m, episode_id, 'after_step_8')
 
-        # Step 9
-        if not self._step_already_completed(m['steps'].get('step_9_youtube_studio_upload', {})):
-            self._check_stop(m, episode_id, 'before_step_9')
-            m = self.run_youtube_upload_staging(episode_id, conversation_id=conversation_id)
-            if stop_after_step == 'step_9_youtube_studio_upload':
-                self.cancel_event.set()
-            self._check_stop(m, episode_id, 'after_step_9')
+        # Step 9: YouTube Upload Staging (Conditional: recipe.enable_youtube_staging)
+        if recipe.enable_youtube_staging:
+            if not self._step_already_completed(m['steps'].get('step_9_youtube_studio_upload', {})):
+                self._check_stop(m, episode_id, 'before_step_9')
+                m = self.run_youtube_upload_staging(episode_id, conversation_id=conversation_id)
+                if stop_after_step == 'step_9_youtube_studio_upload':
+                    self.cancel_event.set()
+                self._check_stop(m, episode_id, 'after_step_9')
+        else:
+            s9 = m['steps'].setdefault('step_9_youtube_studio_upload', {})
+            s9.update(status='skipped', reason='disabled_in_recipe', completed_at=_utc_now())
 
         m['status'] = 'completed'
         self.save_manifest(m, episode_id)

@@ -1980,6 +1980,7 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
       const activeSkillTitle = currentActiveSkill ? currentActiveSkill.title : 'Mar & Kuku - Toddler & Preschool Learning';
       const activeSkillFormat = currentActiveSkill ? currentActiveSkill.format : '16:9 (1920x1080 @ 30fps)';
       const activeSkillCategory = currentActiveSkill ? currentActiveSkill.category : 'kids_preschool';
+      const recipe = wf.recipe || {};
 
       const styleCardHtml = `
         <div class="card" style="background:#0f172a;border:1px solid #3b82f6;margin-bottom:14px;padding:12px 16px;">
@@ -2000,6 +2001,25 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
             <div style="background:#1e293b;padding:6px 10px;border-radius:4px;border:1px solid #334155;">
               🛠 <b>Blueprint:</b> ${currentActiveSkill ? currentActiveSkill.name : 'mar-kuku-kids'}
             </div>
+          </div>
+        </div>
+        <div class="card" style="background:#0f172a;border:1px solid #8b5cf6;margin-bottom:14px;padding:12px 16px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+            <div>
+              <h4 style="margin:0;font-size:14px;color:#c084fc;">📋 Master Production Recipe &amp; Conditional Feature Pipeline</h4>
+              <span style="font-size:12px;color:#94a3b8;">Checked at every step. Each feature runs conditionally based on <code>00_production_recipe.json</code>.</span>
+            </div>
+            <span class="badge ok">Recipe Active</span>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:10px;font-size:11px;color:#cbd5e1;flex-wrap:wrap;">
+            <span class="badge ${recipe.enable_lipsync !== false ? 'ok' : 'warn'}">👄 2D Lip-Sync: ${recipe.enable_lipsync !== false ? 'ENABLED' : 'DISABLED'}</span>
+            <span class="badge ${recipe.enable_karaoke_subtitles !== false ? 'ok' : 'warn'}">🎤 Karaoke Subtitles: ${recipe.enable_karaoke_subtitles !== false ? 'ENABLED' : 'DISABLED'}</span>
+            <span class="badge ${recipe.enable_thumbnail_ab_variants !== false ? 'ok' : 'warn'}">🖼️ 16:9 Thumbnails A/B: ${recipe.enable_thumbnail_ab_variants !== false ? 'ENABLED' : 'DISABLED'}</span>
+            <span class="badge ${recipe.enable_capcut_export !== false ? 'ok' : 'warn'}">🎬 CapCut 16:9: ${recipe.enable_capcut_export !== false ? 'ENABLED' : 'DISABLED'}</span>
+            <span class="badge ${recipe.enable_palmier_export !== false ? 'ok' : 'warn'}">📐 Palmier Pro: ${recipe.enable_palmier_export !== false ? 'ENABLED' : 'DISABLED'}</span>
+            <span class="badge ${recipe.enable_telegram_notifications !== false ? 'ok' : 'warn'}">📱 Telegram Push: ${recipe.enable_telegram_notifications !== false ? 'ENABLED' : 'DISABLED'}</span>
+            <span class="badge ${recipe.enable_youtube_staging !== false ? 'ok' : 'warn'}">🚀 YouTube Stage: ${recipe.enable_youtube_staging !== false ? 'ENABLED' : 'DISABLED'}</span>
+            <span class="badge ok">⏱️ Stillness Hold: ${recipe.interactive_hold_duration_s || 4.0}s</span>
           </div>
         </div>
         <div class="card" style="background:#0f172a;border:1px solid #10b981;margin-bottom:14px;padding:12px 16px;">

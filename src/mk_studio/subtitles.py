@@ -164,3 +164,4 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         # Escape path for FFmpeg filter syntax
         escaped_path = str(ass_path.resolve()).replace("\\", "/").replace(":", "\\:")
         return f"ass='{escaped_path}'"
+

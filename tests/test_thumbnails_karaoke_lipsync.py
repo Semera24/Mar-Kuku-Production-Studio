@@ -88,3 +88,4 @@ def test_character_lipsync_engine(tmp_path: Path):
     assert len(mouth_sprites) == 4
     for _, sprite_path in mouth_sprites.items():
         assert sprite_path.is_file()
+
