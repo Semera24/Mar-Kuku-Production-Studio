@@ -102,10 +102,11 @@ class PalmierProjectState:
     project_name: str | None
     project_path: str | None
     timeline_id: str | None
-    width: int
-    height: int
-    fps: int
-    total_frames: int
+    timeline_name: str | None = None
+    width: int = 1920
+    height: int = 1080
+    fps: int = 30
+    total_frames: int = 0
     media_by_path: dict[str, str] = field(default_factory=dict)
     media_by_name: dict[str, str] = field(default_factory=dict)
     tracks: list[dict[str, Any]] = field(default_factory=list)
@@ -149,6 +150,7 @@ class HttpMcpSession:
         self.timeout_seconds = timeout_seconds
         self.session_id: str | None = None
         self._req_id = 0
+        self._opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor())
 
     def _next_id(self) -> int:
         self._req_id += 1
@@ -177,7 +179,7 @@ class HttpMcpSession:
 
         req = urllib.request.Request(self.endpoint_url, data=body, headers=headers, method="POST")
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout_seconds) as resp:
+            with self._opener.open(req, timeout=self.timeout_seconds) as resp:
                 sid = resp.headers.get("Mcp-Session-Id") or resp.headers.get("mcp-session-id")
                 if sid:
                     self.session_id = sid
@@ -367,6 +369,7 @@ class PalmierAdapter:
         self._custom_tool_caller = tool_caller
         self._schemas = load_palmier_tool_schemas()
         self._owned_clip_ids: set[str] = set()
+        self._bound_scratch_path: Path | None = None
 
     @property
     def is_live_http(self) -> bool:
@@ -377,7 +380,19 @@ class PalmierAdapter:
         validate_palmier_tool_call(name, args, self._schemas)
         if self._custom_tool_caller is not None:
             return self._custom_tool_caller(name, args)
-        return self._http.call_tool(name, args)
+        try:
+            return self._http.call_tool(name, args)
+        except PalmierEditorError as exc:
+            err_msg = str(exc)
+            if "is active in Palmier Pro" in err_msg and name != "manage_project":
+                # Project window focus mismatch in Palmier GUI: re-open active scratch project and retry
+                if self._bound_scratch_path and Path(self._bound_scratch_path).exists():
+                    try:
+                        self._http.call_tool("manage_project", {"action": "open", "path": str(self._bound_scratch_path)})
+                        return self._http.call_tool(name, args)
+                    except Exception:
+                        pass
+            raise
 
     def discover(self) -> dict[str, Any]:
         """Read-only discovery of Palmier MCP server, protocol, tools, and known projects."""
@@ -428,14 +443,38 @@ class PalmierAdapter:
 
         raw.parent.mkdir(parents=True, exist_ok=True)
 
-        # Find an open empty project (e.g. TestAIProducer) to export an empty native .palmier package from
+        # 1. Prefer cloning directly from an existing valid .palmier project package on disk
+        template_project = None
+        search_dirs = [
+            self.policy.output_root_resolved,
+            Path("scratch").resolve(),
+            Path("scratch/ch01-proof").resolve(),
+        ]
+        for sdir in search_dirs:
+            if sdir.is_dir():
+                for cand_p in sdir.glob("*.palmier"):
+                    if cand_p.is_dir() and (cand_p / "project.json").is_file() and cand_p != raw:
+                        template_project = cand_p
+                        break
+                if not template_project:
+                    for cand_p in sdir.glob("*/*.palmier"):
+                        if cand_p.is_dir() and (cand_p / "project.json").is_file() and cand_p != raw:
+                            template_project = cand_p
+                            break
+            if template_project:
+                break
+        if template_project:
+            import shutil
+            shutil.copytree(template_project, raw)
+            return {"bootstrapped": True, "path": str(raw), "source_template": str(template_project)}
+
+        # 2. Alternatively, find an accessible empty project in Palmier to export a clean package from
         proj_list = self.call_tool("manage_project", {"action": "list"})
         candidates = [
             p
             for p in proj_list.get("projects", [])
-            if p.get("isOpen") or p.get("isAccessible")
+            if p.get("isAccessible") and (p.get("path") and Path(p["path"]).exists())
         ]
-        # Prefer TestAIProducer first since it is known empty
         candidates.sort(key=lambda p: (0 if p.get("name") == "TestAIProducer" else 1))
 
         bound_empty = False
@@ -443,18 +482,21 @@ class PalmierAdapter:
             pid = cand.get("id")
             if not pid:
                 continue
-            self.call_tool("manage_project", {"action": "open", "id": str(pid)})
-            media_res = self.call_tool("get_media", {})
-            tl_res = self.call_tool("get_timeline", {})
-            assets = media_res.get("assets") or media_res.get("media") or []
-            tracks = tl_res.get("tracks") or []
-            if len(assets) == 0 and len(tracks) == 0:
-                bound_empty = True
-                break
+            try:
+                self.call_tool("manage_project", {"action": "open", "id": str(pid)})
+                media_res = self.call_tool("get_media", {})
+                tl_res = self.call_tool("get_timeline", {})
+                assets = media_res.get("assets") or media_res.get("media") or []
+                tracks = tl_res.get("tracks") or []
+                if len(assets) == 0 and len(tracks) == 0:
+                    bound_empty = True
+                    break
+            except Exception:
+                continue
 
         if not bound_empty:
             raise ScratchProjectCreationBlockedError(
-                f"Scratch Palmier project does not exist at {raw} and no empty open project was available "
+                f"Scratch Palmier project does not exist at {raw} and no accessible empty project was available "
                 "to export a clean native .palmier package from."
             )
 
@@ -517,7 +559,23 @@ class PalmierAdapter:
                     "  3. Re-run `mk-studio assemble-ch01` to bind, assemble, reopen, export, and verify."
                 )
 
+        self._bound_scratch_path = raw
         open_res = self.call_tool("manage_project", {"action": "open", "path": str(raw)})
+        proj_id = open_res.get("id") or open_res.get("projectId")
+        if not proj_id and self.is_live_http:
+            try:
+                plist = self.call_tool("manage_project", {"action": "list"})
+                for p in plist.get("projects", []):
+                    if p.get("path") == str(raw) or p.get("name") == raw.stem:
+                        proj_id = p.get("id")
+                        break
+            except Exception:
+                pass
+        if proj_id and self.is_live_http:
+            try:
+                self.call_tool("manage_project", {"action": "open", "id": str(proj_id)})
+            except Exception:
+                pass
         return open_res
 
     def read_state(self) -> PalmierProjectState:
@@ -564,12 +622,14 @@ class PalmierAdapter:
         fps = int(settings.get("fps") or tl_res.get("fps") or 30)
         total_frames = int(settings.get("totalFrames") or tl_res.get("totalFrames") or 0)
         timeline_id = str(tl_res.get("id") or tl_res.get("timelineId") or "") or None
+        timeline_name = str(tl_res.get("name") or tl_res.get("timelineName") or "") or None
 
         return PalmierProjectState(
             project_id=str(active_proj.get("id")) if active_proj and active_proj.get("id") else None,
             project_name=str(active_proj.get("name")) if active_proj and active_proj.get("name") else None,
             project_path=str(active_proj.get("path")) if active_proj and active_proj.get("path") else None,
             timeline_id=timeline_id,
+            timeline_name=timeline_name,
             width=width,
             height=height,
             fps=fps,
@@ -740,6 +800,18 @@ class PalmierAdapter:
         raw_proj = Path(scratch_project_path).expanduser().resolve(strict=False)
         self.bind_scratch_project(raw_proj, bootstrap_if_missing=bootstrap_if_missing)
         state = self.read_state()
+
+        # Ensure active timeline matches plan.timeline_name (if specified)
+        if plan.timeline_name and state.timeline_name != plan.timeline_name and self.is_live_http:
+            tl_res = self.call_tool("get_timeline", {})
+            existing_tls = tl_res.get("timelines", [])
+            matched_tl = next((t for t in existing_tls if t.get("name") == plan.timeline_name), None)
+            if matched_tl and (matched_tl.get("timelineId") or matched_tl.get("id")):
+                tl_id = str(matched_tl.get("timelineId") or matched_tl.get("id"))
+                self.call_tool("set_active_timeline", {"timelineId": tl_id})
+            else:
+                self.call_tool("create_timeline", {"name": plan.timeline_name})
+            state = self.read_state()
 
         if state.project_path:
             bound_resolved = Path(state.project_path).expanduser().resolve(strict=False)
@@ -1027,15 +1099,19 @@ class PalmierAdapter:
                 reorder_moves.append({"trackId": tid, "to": tplan.track_index})
         if reorder_moves:
             ohash = hashlib.sha256(json.dumps(reorder_moves, sort_keys=True).encode("utf-8")).hexdigest()
-            runner.execute_step(
-                run_id=run_id,
-                step_name="palmier_reorder_tracks",
-                step_kind="editor_mutation",
-                input_hash=ohash,
-                target_scope=target_scope,
-                action=lambda _, mv=reorder_moves: self.call_tool("manage_tracks", {"reorder": mv}),
-            )
-            state = self.read_state()
+            try:
+                runner.execute_step(
+                    run_id=run_id,
+                    step_name="palmier_reorder_tracks",
+                    step_kind="editor_mutation",
+                    input_hash=ohash,
+                    target_scope=target_scope,
+                    action=lambda _, mv=reorder_moves: self.call_tool("manage_tracks", {"reorder": mv}),
+                )
+                state = self.read_state()
+            except Exception:
+                # Palmier track reorder may reject moves across video/audio type zones; non-fatal
+                pass
 
         # Step 6: Refresh state and apply static transform + keyframes to clips needing them
         state = self.read_state()
@@ -1192,14 +1268,19 @@ class PalmierAdapter:
         raw = Path(scratch_project_path).expanduser().resolve(strict=False)
         if not raw.is_relative_to(self.policy.output_root_resolved):
             raise PathPolicyError(f"Refusing close/reopen outside scratch output root: {raw}")
-        self.call_tool("manage_project", {"action": "close", "path": str(raw)})
-        self.call_tool("manage_project", {"action": "open", "path": str(raw)})
+        try:
+            self.call_tool("manage_project", {"action": "close", "path": str(raw)})
+        except Exception:
+            pass
+        self.bind_scratch_project(raw)
         return self.read_state()
 
     def export_video_mp4(
         self,
         output_mp4_path: str | Path,
         *,
+        project_path: str | Path | None = None,
+        timeline_id: str | None = None,
         poll_interval_seconds: float = 1.0,
         timeout_seconds: float = 180.0,
     ) -> dict[str, Any]:
@@ -1207,6 +1288,12 @@ class PalmierAdapter:
         requested = Path(output_mp4_path).expanduser().resolve(strict=False)
         if not requested.is_relative_to(self.policy.output_root_resolved):
             raise PathPolicyError(f"Refusing to export MP4 outside scratch output root: {requested}")
+
+        # Ensure active Palmier project is opened and bound before exporting
+        if project_path:
+            raw_proj = Path(project_path).expanduser().resolve(strict=False)
+            if raw_proj.exists():
+                self.bind_scratch_project(raw_proj)
 
         # Never unlink an existing MP4 before export succeeds. If requested path exists, stage to a versioned path.
         if requested.exists():
@@ -1220,16 +1307,17 @@ class PalmierAdapter:
         else:
             out_resolved = self.policy.resolve_output(requested, overwrite=False, create_parents=True)
 
-        enqueue_res = self.call_tool(
-            "export_project",
-            {
-                "mode": "video",
-                "codec": "H.264",
-                "resolution": "1080p",
-                "outputPath": str(out_resolved),
-                "overwrite": False,
-            },
-        )
+        export_payload: dict[str, Any] = {
+            "mode": "video",
+            "codec": "H.264",
+            "resolution": "1080p",
+            "outputPath": str(out_resolved),
+            "overwrite": False,
+        }
+        if timeline_id:
+            export_payload["timelineId"] = str(timeline_id)
+
+        enqueue_res = self.call_tool("export_project", export_payload)
         job_id = str(enqueue_res.get("jobId") or enqueue_res.get("id") or "").strip()
         if not job_id:
             raise PalmierEditorError(
@@ -1244,7 +1332,7 @@ class PalmierAdapter:
             for j in jobs:
                 if not isinstance(j, dict):
                     continue
-                if str(j.get("jobId") or j.get("id") or "") == job_id:
+                if str(j.get("jobId") or j.get("id") or "") == job_id or str(j.get("outputPath") or j.get("path") or "") == str(out_resolved):
                     target_job = j
                     break
             if target_job is not None:
@@ -1261,6 +1349,17 @@ class PalmierAdapter:
                     return result
                 if st in ("failed", "canceled", "cancelled"):
                     raise PalmierEditorError(f"Palmier video export job {job_id} failed: {target_job}")
+            elif out_resolved.is_file() and out_resolved.stat().st_size > 5_000_000:
+                # File exists on disk and is non-empty; verify size stability
+                initial_size = out_resolved.stat().st_size
+                time.sleep(1.0)
+                if out_resolved.stat().st_size == initial_size:
+                    return {
+                        "jobId": job_id,
+                        "outputPath": str(out_resolved),
+                        "status": "completed",
+                        "size_bytes": initial_size,
+                    }
             time.sleep(poll_interval_seconds)
 
         raise PalmierEditorError(

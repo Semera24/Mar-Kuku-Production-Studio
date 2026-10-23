@@ -593,7 +593,7 @@ def compile_scene(
             marker_key=c.cue_id,
             name=c.name,
             start_frame=c.start_frame,
-            duration_frames=0,
+            duration_frames=max(0, c.end_frame - c.start_frame),
             comment=f"[{c.authority}] {c.lyric_or_action}",
             color="#3B82F6" if c.authority == "report_derived" else "#10B981",
         )

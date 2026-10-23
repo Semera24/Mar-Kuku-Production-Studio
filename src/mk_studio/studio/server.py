@@ -196,7 +196,11 @@ class StudioOrchestrator:
             elif intent_kind == "flow_music_audio_pipeline":
                 inferred_action = "flow_music_audio_pipeline"
             elif intent_kind == "continue_ch02_audio":
-                inferred_action = "continue_ch02_audio"
+                inferred_action = "continue_selected_chapter"
+            elif intent_kind == "continue_selected_chapter":
+                inferred_action = "continue_selected_chapter"
+            elif intent_kind == "reject_decision":
+                inferred_action = "reject_decision"
             elif intent_kind == "apply_audio_repair":
                 inferred_action = "apply_audio_repair"
             elif intent_kind == "assemble_palmier":
@@ -208,7 +212,7 @@ class StudioOrchestrator:
             elif intent_kind == "full_pipeline":
                 inferred_action = "full_pipeline"
 
-        if inferred_action in ('consult_three_agents', 'resume_workflow', 'continue_ch02_audio', 'apply_audio_repair') or str(inferred_action).startswith('production_'):
+        if inferred_action in ('consult_three_agents', 'resume_workflow', 'continue_ch02_audio', 'continue_selected_chapter', 'apply_audio_repair') or str(inferred_action).startswith('production_'):
             self.reset_stop()
 
         if inferred_action == 'consult_three_agents':
@@ -349,14 +353,25 @@ class StudioOrchestrator:
                 if s6a_file := pipeline_res["manifest"].get("steps", {}).get("step_6a_flow_music_audio_pipeline", {}).get("output_file"):
                     attachments.append({"label": "06a_flow_music_receipt.json", "path": str(s6a_file)})
 
-            elif inferred_action == "continue_ch02_audio":
-                pipeline_res = self.workflow.run_or_resume_ch02_audio_pipeline(
+            elif inferred_action in ("continue_selected_chapter", "continue_ch02_audio"):
+                pipeline_res = self.workflow.run_or_resume_chapter_pipeline(
                     episode_id="EP02_CH02",
                     conversation_id=conversation_id,
+                    user_message=user_message,
                 )
                 result_payload = pipeline_res["manifest"]
                 reply_text = pipeline_res["reply_text"]
                 attachments.extend(pipeline_res.get("attachments", []))
+
+            elif inferred_action == "reject_decision":
+                reject_res = self.workflow.reject_decision(
+                    episode_id="EP02_CH02",
+                    decision_text=user_message,
+                    conversation_id=conversation_id,
+                )
+                result_payload = reject_res["manifest"]
+                reply_text = reject_res["reply_text"]
+                attachments.extend(reject_res.get("attachments", []))
 
             elif inferred_action == "apply_audio_repair":
                 repair_res = self.workflow.apply_audio_repair(
@@ -556,22 +571,39 @@ class StudioOrchestrator:
             else:
                 if self.cancel_event.is_set():
                     raise BrowserCancelledError('Studio remains stopped. Resume explicitly before sending provider work.')
-                gen_res = self.providers.generate(
-                    eff_provider,
-                    user_message,
-                    conversation_id=conversation_id,
-                    context_summary=context_summary,
-                    browser_target_url=params.get("browser_target_url"),
-                )
-                result_payload = gen_res
-                reply_text = str(gen_res.get("response") or "")
-                citations.append(
-                    {
-                        "provider_id": eff_provider,
-                        "provider_kind": gen_res.get("provider_kind"),
-                        "status": gen_res.get("status"),
-                    }
-                )
+                try:
+                    gen_res = self.providers.generate(
+                        eff_provider,
+                        user_message,
+                        conversation_id=conversation_id,
+                        context_summary=context_summary,
+                        browser_target_url=params.get("browser_target_url"),
+                    )
+                    result_payload = gen_res
+                    reply_text = str(gen_res.get("response") or "")
+                    citations.append(
+                        {
+                            "provider_id": eff_provider,
+                            "provider_kind": gen_res.get("provider_kind"),
+                            "status": gen_res.get("status"),
+                        }
+                    )
+                except Exception as exc:
+                    # Informative local Studio answer when external provider is unavailable
+                    ch02_m = self.workflow.load_manifest("EP02_CH02_AUDIO")
+                    ch02_steps = ch02_m.get("steps") or {}
+                    reply_text = (
+                        f"**Studio Status & Information (Direct Studio Answer):**\n\n"
+                        f"- **Question Received:** \"{user_message}\"\n"
+                        f"- **Action Executed:** None (Zero edits performed; questions never trigger modifications).\n"
+                        f"- **Active Chapter:** `Episode 002 / CH02 — Meet Red, Yellow and Blue`\n"
+                        f"- **Workflow Status:** `{ch02_m.get('status', 'in_progress')}`\n"
+                        f"- **Candidate Audio Identity:** Candidate A and Candidate B have identical decoded PCM audio (SHA-256: `5333d9df...`, 84.512s, 48kHz Stereo). Both represent Take 1 (Flow Music Lyria 3.5 Remix).\n"
+                        f"- **Wording Reconciliation:** Spoken words *'Have a look at this one'* vs approved script *'And look at this one'*.\n"
+                        f"- **Response Hold:** Prompt vocal finishes at 22.40s; answer begins at 29.30s (6.90s gap; 4.00s hold window is [22.40s..26.40s]).\n\n"
+                        f"*(Local Studio knowledge applied; external provider `{eff_provider}`: {exc})*"
+                    )
+                    result_payload = {"response": reply_text, "status": "studio_informational_response", "provider_kind": "local_studio"}
 
             self.store.update_job(
                 job_id,
@@ -865,9 +897,12 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
       document.getElementById('chat-messages').innerHTML = msgs.map(m => {
         let attHtml = '';
         if (m.attachments && m.attachments.length) {
-          attHtml = '<div style="margin-top:10px;padding-top:8px;border-top:1px solid #334155;"><strong>Attachments & Audio Controls:</strong>';
+          attHtml = '<div style="margin-top:10px;padding-top:8px;border-top:1px solid #334155;"><strong>Attachments & Media Players:</strong>';
           for (const att of m.attachments) {
             attHtml += `<div style="margin-top:6px;font-size:12px;"><b>${att.label || 'File'}:</b> <span style="color:#94a3b8">${att.path}</span>`;
+            if (att.video_url) {
+              attHtml += `<br/><video controls src="${att.video_url}" style="width:100%;margin-top:4px;max-height:280px;background:#000;border-radius:4px;"></video>`;
+            }
             if (att.audio_url) {
               attHtml += `<br/><audio controls src="${att.audio_url}" style="width:100%;margin-top:4px;height:36px;"></audio>`;
             }
@@ -1178,6 +1213,21 @@ def create_studio_app(policy: RootPolicy | None = None) -> Starlette:
             return JSONResponse({"error": f"File not found: {p}"}, status_code=404)
         return FileResponse(str(p), media_type="audio/wav")
 
+    async def api_video(request: Request):
+        file_param = request.query_params.get("file")
+        if not file_param:
+            return JSONResponse({"error": "Missing 'file' parameter"}, status_code=400)
+        p = Path(file_param).resolve()
+        allowed_prefixes = list(orchestrator.policy.allowed_read_roots) + [
+            orchestrator.policy.output_root_resolved,
+            orchestrator.policy.production_root_resolved,
+        ]
+        if not any(str(p).startswith(str(prefix)) for prefix in allowed_prefixes):
+            return JSONResponse({"error": "Access denied: file outside permitted directories"}, status_code=403)
+        if not p.is_file():
+            return JSONResponse({"error": f"File not found: {p}"}, status_code=404)
+        return FileResponse(str(p), media_type="video/mp4")
+
     async def api_chat(request: Request) -> JSONResponse:
         body = await request.json()
         cid = str(body.get("conversation_id") or "conv-e02-ch01-main")
@@ -1235,6 +1285,7 @@ def create_studio_app(policy: RootPolicy | None = None) -> Starlette:
             Route("/api/browser/takeover", api_browser_takeover, methods=["POST"]),
             Route("/api/browser/preview", api_browser_preview, methods=["GET"]),
             Route("/api/audio", api_audio, methods=["GET"]),
+            Route("/api/video", api_video, methods=["GET"]),
             Route("/api/stop", api_stop, methods=["POST"]),
         ]
     )

@@ -650,45 +650,76 @@ def generate_episode_assets(
     kuku_bob = MotionProfileSpec(mode="grounded_bob", cycle_frames=50, scale_amplitude=0.034, rotation_amplitude_deg=1.8, shared_phase_origin_frame=15)
     still_hold = MotionProfileSpec(mode="still_hold", cycle_frames=60, scale_amplitude=0.0, rotation_amplitude_deg=0.0)
 
-    # Poses & Spans (30.00s = 900 frames, Hold: 501..621)
     mar_x, mar_y, mar_h = 0.24, 0.935, 0.63
     kuku_x, kuku_y, kuku_h = 0.46, 0.935, 0.40
 
-    pose_spans = [
-        # Mar
-        PoseSpanSpec(span_id="mar_01", character_id="Mar", asset_id="mar_wave", start_frame=0, end_frame=50, anchor_canvas_x=mar_x, anchor_canvas_y=mar_y, target_visible_height_Norm=mar_h, motion=mar_bob),
-        PoseSpanSpec(span_id="mar_02", character_id="Mar", asset_id="mar_introduce", start_frame=50, end_frame=100, anchor_canvas_x=mar_x, anchor_canvas_y=mar_y, target_visible_height_Norm=mar_h, motion=mar_bob),
-        PoseSpanSpec(span_id="mar_03", character_id="Mar", asset_id="mar_point_right", start_frame=100, end_frame=210, anchor_canvas_x=mar_x, anchor_canvas_y=mar_y, target_visible_height_Norm=mar_h, motion=mar_bob),
-        PoseSpanSpec(span_id="mar_04", character_id="Mar", asset_id="mar_introduce", start_frame=210, end_frame=420, anchor_canvas_x=mar_x, anchor_canvas_y=mar_y, target_visible_height_Norm=mar_h, motion=mar_bob),
-        PoseSpanSpec(span_id="mar_05", character_id="Mar", asset_id="mar_point_right", start_frame=420, end_frame=501, anchor_canvas_x=mar_x, anchor_canvas_y=mar_y, target_visible_height_Norm=mar_h, motion=mar_bob),
-        PoseSpanSpec(span_id="mar_06_hold", character_id="Mar", asset_id="mar_listen", start_frame=501, end_frame=621, anchor_canvas_x=mar_x, anchor_canvas_y=mar_y, target_visible_height_Norm=mar_h, motion=still_hold),
-        PoseSpanSpec(span_id="mar_07", character_id="Mar", asset_id="mar_happy", start_frame=621, end_frame=840, anchor_canvas_x=mar_x, anchor_canvas_y=mar_y, target_visible_height_Norm=mar_h, motion=mar_bob),
-        PoseSpanSpec(span_id="mar_08_close", character_id="Mar", asset_id="mar_wave", start_frame=840, end_frame=total_frames, anchor_canvas_x=mar_x, anchor_canvas_y=mar_y, target_visible_height_Norm=mar_h, motion=mar_bob),
-        # Kuku
-        PoseSpanSpec(span_id="kuku_01", character_id="Kuku", asset_id="kuku_wave", start_frame=0, end_frame=50, anchor_canvas_x=kuku_x, anchor_canvas_y=kuku_y, target_visible_height_Norm=kuku_h, motion=kuku_bob),
-        PoseSpanSpec(span_id="kuku_02", character_id="Kuku", asset_id="kuku_point_right", start_frame=50, end_frame=210, anchor_canvas_x=kuku_x, anchor_canvas_y=kuku_y, target_visible_height_Norm=kuku_h, motion=kuku_bob),
-        PoseSpanSpec(span_id="kuku_03", character_id="Kuku", asset_id="kuku_think", start_frame=210, end_frame=420, anchor_canvas_x=kuku_x, anchor_canvas_y=kuku_y, target_visible_height_Norm=kuku_h, motion=kuku_bob),
-        PoseSpanSpec(span_id="kuku_04", character_id="Kuku", asset_id="kuku_point_right", start_frame=420, end_frame=501, anchor_canvas_x=kuku_x, anchor_canvas_y=kuku_y, target_visible_height_Norm=kuku_h, motion=kuku_bob),
-        PoseSpanSpec(span_id="kuku_05_hold", character_id="Kuku", asset_id="kuku_happy", start_frame=501, end_frame=621, anchor_canvas_x=kuku_x, anchor_canvas_y=kuku_y, target_visible_height_Norm=kuku_h, motion=still_hold),
-        PoseSpanSpec(span_id="kuku_06_giggle", character_id="Kuku", asset_id="kuku_happy", start_frame=621, end_frame=840, anchor_canvas_x=kuku_x, anchor_canvas_y=kuku_y, target_visible_height_Norm=kuku_h, motion=kuku_bob),
-        PoseSpanSpec(span_id="kuku_07_close", character_id="Kuku", asset_id="kuku_wave", start_frame=840, end_frame=total_frames, anchor_canvas_x=kuku_x, anchor_canvas_y=kuku_y, target_visible_height_Norm=kuku_h, motion=kuku_bob),
-    ]
-
-    # Props Spans (Scene 1: Red Flower, Scene 2: 2 Yellow, Scene 3: 3 Purple)
-    prop_spans = [
-        PropSpanSpec(span_id="prop_01_red", prop_id="Prop_Flower_Red", asset_id="prop_flower_red", start_frame=50, end_frame=210, anchor_canvas_x=0.74, anchor_canvas_y=0.915, target_visible_height_Norm=0.45),
-        PropSpanSpec(span_id="prop_02_yellow", prop_id="Prop_Flowers_Yellow_2", asset_id="prop_flowers_yellow_2", start_frame=215, end_frame=420, anchor_canvas_x=0.74, anchor_canvas_y=0.915, target_visible_height_Norm=0.45),
-        PropSpanSpec(span_id="prop_03_purple", prop_id="Prop_Flowers_Purple_3", asset_id="prop_flowers_purple_3", start_frame=425, end_frame=895, anchor_canvas_x=0.74, anchor_canvas_y=0.915, target_visible_height_Norm=0.48),
-    ]
-
-    cues = [
-        CueEvent(cue_id="cue_01_hello", name="Scene 1 — One Red Flower", start_seconds=0.0, end_seconds=7.0, start_frame=0, end_frame=210, lyric_or_action="Mar and Kuku introduce the garden and count one red flower", authority="transcript_verified"),
-        CueEvent(cue_id="cue_02_yellow", name="Scene 2 — Two Yellow Flowers", start_seconds=7.0, end_seconds=14.0, start_frame=210, end_frame=420, lyric_or_action="Mar and Kuku count two yellow flowers", authority="transcript_verified"),
-        CueEvent(cue_id="cue_03_purple", name="Scene 3 — Three Purple Flowers", start_seconds=14.0, end_seconds=16.7, start_frame=420, end_frame=501, lyric_or_action="Three purple flowers reveal and counting question", authority="transcript_verified"),
-        CueEvent(cue_id="cue_04_hold", name="4.0-Second Response Hold", start_seconds=16.7, end_seconds=20.7, start_frame=501, end_frame=621, lyric_or_action="Interactive viewer counting pause (pure stillness)", authority="signal_verified"),
-        CueEvent(cue_id="cue_05_kuku_giggle", name="Kuku Giggle & Count Petals", start_seconds=20.7, end_seconds=26.0, start_frame=621, end_frame=780, lyric_or_action="Kuku giggles 'One! Two! Three purple petals!'", authority="transcript_verified"),
-        CueEvent(cue_id="cue_06_goodbye", name="Celebration & Goodbye Wave", start_seconds=26.0, end_seconds=30.0, start_frame=780, end_frame=total_frames, lyric_or_action="Mar & Kuku celebrate and wave goodbye", authority="transcript_verified"),
-    ]
+    if total_frames > 1200:
+        # Dynamic chapter configuration (e.g. EP02 CH02: 81.612s / 2448 frames, 4s hold at [22.40s..26.40s] -> frames [672..792])
+        h_start = 672
+        h_end = 792
+        pose_spans = [
+            # Mar
+            PoseSpanSpec(span_id="mar_01", character_id="Mar", asset_id="mar_wave", start_frame=0, end_frame=120, anchor_canvas_x=mar_x, anchor_canvas_y=mar_y, target_visible_height_Norm=mar_h, motion=mar_bob),
+            PoseSpanSpec(span_id="mar_02", character_id="Mar", asset_id="mar_introduce", start_frame=120, end_frame=360, anchor_canvas_x=mar_x, anchor_canvas_y=mar_y, target_visible_height_Norm=mar_h, motion=mar_bob),
+            PoseSpanSpec(span_id="mar_03", character_id="Mar", asset_id="mar_point_right", start_frame=360, end_frame=h_start, anchor_canvas_x=mar_x, anchor_canvas_y=mar_y, target_visible_height_Norm=mar_h, motion=mar_bob),
+            PoseSpanSpec(span_id="mar_04_hold", character_id="Mar", asset_id="mar_listen", start_frame=h_start, end_frame=h_end, anchor_canvas_x=mar_x, anchor_canvas_y=mar_y, target_visible_height_Norm=mar_h, motion=still_hold),
+            PoseSpanSpec(span_id="mar_05", character_id="Mar", asset_id="mar_happy", start_frame=h_end, end_frame=1500, anchor_canvas_x=mar_x, anchor_canvas_y=mar_y, target_visible_height_Norm=mar_h, motion=mar_bob),
+            PoseSpanSpec(span_id="mar_06", character_id="Mar", asset_id="mar_point_right", start_frame=1500, end_frame=2100, anchor_canvas_x=mar_x, anchor_canvas_y=mar_y, target_visible_height_Norm=mar_h, motion=mar_bob),
+            PoseSpanSpec(span_id="mar_07_close", character_id="Mar", asset_id="mar_wave", start_frame=2100, end_frame=total_frames, anchor_canvas_x=mar_x, anchor_canvas_y=mar_y, target_visible_height_Norm=mar_h, motion=mar_bob),
+            # Kuku
+            PoseSpanSpec(span_id="kuku_01", character_id="Kuku", asset_id="kuku_wave", start_frame=0, end_frame=120, anchor_canvas_x=kuku_x, anchor_canvas_y=kuku_y, target_visible_height_Norm=kuku_h, motion=kuku_bob),
+            PoseSpanSpec(span_id="kuku_02", character_id="Kuku", asset_id="kuku_think", start_frame=120, end_frame=360, anchor_canvas_x=kuku_x, anchor_canvas_y=kuku_y, target_visible_height_Norm=kuku_h, motion=kuku_bob),
+            PoseSpanSpec(span_id="kuku_03", character_id="Kuku", asset_id="kuku_point_right", start_frame=360, end_frame=h_start, anchor_canvas_x=kuku_x, anchor_canvas_y=kuku_y, target_visible_height_Norm=kuku_h, motion=kuku_bob),
+            PoseSpanSpec(span_id="kuku_04_hold", character_id="Kuku", asset_id="kuku_happy", start_frame=h_start, end_frame=h_end, anchor_canvas_x=kuku_x, anchor_canvas_y=kuku_y, target_visible_height_Norm=kuku_h, motion=still_hold),
+            PoseSpanSpec(span_id="kuku_05", character_id="Kuku", asset_id="kuku_happy", start_frame=h_end, end_frame=1500, anchor_canvas_x=kuku_x, anchor_canvas_y=kuku_y, target_visible_height_Norm=kuku_h, motion=kuku_bob),
+            PoseSpanSpec(span_id="kuku_06", character_id="Kuku", asset_id="kuku_think", start_frame=1500, end_frame=2100, anchor_canvas_x=kuku_x, anchor_canvas_y=kuku_y, target_visible_height_Norm=kuku_h, motion=kuku_bob),
+            PoseSpanSpec(span_id="kuku_07_close", character_id="Kuku", asset_id="kuku_wave", start_frame=2100, end_frame=total_frames, anchor_canvas_x=kuku_x, anchor_canvas_y=kuku_y, target_visible_height_Norm=kuku_h, motion=kuku_bob),
+        ]
+        prop_spans = [
+            PropSpanSpec(span_id="prop_01_red", prop_id="Prop_Flower_Red", asset_id="prop_flower_red", start_frame=120, end_frame=h_end, anchor_canvas_x=0.74, anchor_canvas_y=0.915, target_visible_height_Norm=0.45),
+            PropSpanSpec(span_id="prop_02_yellow", prop_id="Prop_Flowers_Yellow_2", asset_id="prop_flowers_yellow_2", start_frame=h_end, end_frame=1500, anchor_canvas_x=0.74, anchor_canvas_y=0.915, target_visible_height_Norm=0.45),
+            PropSpanSpec(span_id="prop_03_purple", prop_id="Prop_Flowers_Purple_3", asset_id="prop_flowers_purple_3", start_frame=1500, end_frame=total_frames - 10, anchor_canvas_x=0.74, anchor_canvas_y=0.915, target_visible_height_Norm=0.48),
+        ]
+        cues = [
+            CueEvent(cue_id="cue_01_red", name="Scene 1 — Red Flower & Question", start_seconds=0.0, end_seconds=22.40, start_frame=0, end_frame=h_start, lyric_or_action="Mar introduces red flower and asks 'Can you say, Red?'", authority="transcript_verified"),
+            CueEvent(cue_id="cue_02_hold", name="4.0-Second Response Hold", start_seconds=22.40, end_seconds=26.40, start_frame=h_start, end_frame=h_end, lyric_or_action="Interactive toddler response pause (pure stillness)", authority="signal_verified"),
+            CueEvent(cue_id="cue_03_yellow_blue", name="Scene 2 — Yellow and Blue Flowers", start_seconds=26.40, end_seconds=70.0, start_frame=h_end, end_frame=2100, lyric_or_action="Exploring yellow and blue flowers together", authority="transcript_verified"),
+            CueEvent(cue_id="cue_04_goodbye", name="Celebration & Goodbye Wave", start_seconds=70.0, end_seconds=float(audio_stream.duration_seconds), start_frame=2100, end_frame=total_frames, lyric_or_action="Mar and Kuku celebrate colors and wave goodbye", authority="transcript_verified"),
+        ]
+    else:
+        # 30.00s proof episode
+        pose_spans = [
+            # Mar
+            PoseSpanSpec(span_id="mar_01", character_id="Mar", asset_id="mar_wave", start_frame=0, end_frame=50, anchor_canvas_x=mar_x, anchor_canvas_y=mar_y, target_visible_height_Norm=mar_h, motion=mar_bob),
+            PoseSpanSpec(span_id="mar_02", character_id="Mar", asset_id="mar_introduce", start_frame=50, end_frame=100, anchor_canvas_x=mar_x, anchor_canvas_y=mar_y, target_visible_height_Norm=mar_h, motion=mar_bob),
+            PoseSpanSpec(span_id="mar_03", character_id="Mar", asset_id="mar_point_right", start_frame=100, end_frame=210, anchor_canvas_x=mar_x, anchor_canvas_y=mar_y, target_visible_height_Norm=mar_h, motion=mar_bob),
+            PoseSpanSpec(span_id="mar_04", character_id="Mar", asset_id="mar_introduce", start_frame=210, end_frame=420, anchor_canvas_x=mar_x, anchor_canvas_y=mar_y, target_visible_height_Norm=mar_h, motion=mar_bob),
+            PoseSpanSpec(span_id="mar_05", character_id="Mar", asset_id="mar_point_right", start_frame=420, end_frame=501, anchor_canvas_x=mar_x, anchor_canvas_y=mar_y, target_visible_height_Norm=mar_h, motion=mar_bob),
+            PoseSpanSpec(span_id="mar_06_hold", character_id="Mar", asset_id="mar_listen", start_frame=501, end_frame=621, anchor_canvas_x=mar_x, anchor_canvas_y=mar_y, target_visible_height_Norm=mar_h, motion=still_hold),
+            PoseSpanSpec(span_id="mar_07", character_id="Mar", asset_id="mar_happy", start_frame=621, end_frame=840, anchor_canvas_x=mar_x, anchor_canvas_y=mar_y, target_visible_height_Norm=mar_h, motion=mar_bob),
+            PoseSpanSpec(span_id="mar_08_close", character_id="Mar", asset_id="mar_wave", start_frame=840, end_frame=total_frames, anchor_canvas_x=mar_x, anchor_canvas_y=mar_y, target_visible_height_Norm=mar_h, motion=mar_bob),
+            # Kuku
+            PoseSpanSpec(span_id="kuku_01", character_id="Kuku", asset_id="kuku_wave", start_frame=0, end_frame=50, anchor_canvas_x=kuku_x, anchor_canvas_y=kuku_y, target_visible_height_Norm=kuku_h, motion=kuku_bob),
+            PoseSpanSpec(span_id="kuku_02", character_id="Kuku", asset_id="kuku_point_right", start_frame=50, end_frame=210, anchor_canvas_x=kuku_x, anchor_canvas_y=kuku_y, target_visible_height_Norm=kuku_h, motion=kuku_bob),
+            PoseSpanSpec(span_id="kuku_03", character_id="Kuku", asset_id="kuku_think", start_frame=210, end_frame=420, anchor_canvas_x=kuku_x, anchor_canvas_y=kuku_y, target_visible_height_Norm=kuku_h, motion=kuku_bob),
+            PoseSpanSpec(span_id="kuku_04", character_id="Kuku", asset_id="kuku_point_right", start_frame=420, end_frame=501, anchor_canvas_x=kuku_x, anchor_canvas_y=kuku_y, target_visible_height_Norm=kuku_h, motion=kuku_bob),
+            PoseSpanSpec(span_id="kuku_05_hold", character_id="Kuku", asset_id="kuku_happy", start_frame=501, end_frame=621, anchor_canvas_x=kuku_x, anchor_canvas_y=kuku_y, target_visible_height_Norm=kuku_h, motion=still_hold),
+            PoseSpanSpec(span_id="kuku_06_giggle", character_id="Kuku", asset_id="kuku_happy", start_frame=621, end_frame=840, anchor_canvas_x=kuku_x, anchor_canvas_y=kuku_y, target_visible_height_Norm=kuku_h, motion=kuku_bob),
+            PoseSpanSpec(span_id="kuku_07_close", character_id="Kuku", asset_id="kuku_wave", start_frame=840, end_frame=total_frames, anchor_canvas_x=kuku_x, anchor_canvas_y=kuku_y, target_visible_height_Norm=kuku_h, motion=kuku_bob),
+        ]
+        prop_spans = [
+            PropSpanSpec(span_id="prop_01_red", prop_id="Prop_Flower_Red", asset_id="prop_flower_red", start_frame=50, end_frame=210, anchor_canvas_x=0.74, anchor_canvas_y=0.915, target_visible_height_Norm=0.45),
+            PropSpanSpec(span_id="prop_02_yellow", prop_id="Prop_Flowers_Yellow_2", asset_id="prop_flowers_yellow_2", start_frame=215, end_frame=420, anchor_canvas_x=0.74, anchor_canvas_y=0.915, target_visible_height_Norm=0.45),
+            PropSpanSpec(span_id="prop_03_purple", prop_id="Prop_Flowers_Purple_3", asset_id="prop_flowers_purple_3", start_frame=425, end_frame=895, anchor_canvas_x=0.74, anchor_canvas_y=0.915, target_visible_height_Norm=0.48),
+        ]
+        cues = [
+            CueEvent(cue_id="cue_01_hello", name="Scene 1 — One Red Flower", start_seconds=0.0, end_seconds=7.0, start_frame=0, end_frame=210, lyric_or_action="Mar and Kuku introduce the garden and count one red flower", authority="transcript_verified"),
+            CueEvent(cue_id="cue_02_yellow", name="Scene 2 — Two Yellow Flowers", start_seconds=7.0, end_seconds=14.0, start_frame=210, end_frame=420, lyric_or_action="Mar and Kuku count two yellow flowers", authority="transcript_verified"),
+            CueEvent(cue_id="cue_03_purple", name="Scene 3 — Three Purple Flowers", start_seconds=14.0, end_seconds=16.7, start_frame=420, end_frame=501, lyric_or_action="Three purple flowers reveal and counting question", authority="transcript_verified"),
+            CueEvent(cue_id="cue_04_hold", name="4.0-Second Response Hold", start_seconds=16.7, end_seconds=20.7, start_frame=501, end_frame=621, lyric_or_action="Interactive viewer counting pause (pure stillness)", authority="signal_verified"),
+            CueEvent(cue_id="cue_05_kuku_giggle", name="Kuku Giggle & Count Petals", start_seconds=20.7, end_seconds=26.0, start_frame=621, end_frame=780, lyric_or_action="Kuku giggles 'One! Two! Three purple petals!'", authority="transcript_verified"),
+            CueEvent(cue_id="cue_06_goodbye", name="Celebration & Goodbye Wave", start_seconds=26.0, end_seconds=30.0, start_frame=780, end_frame=total_frames, lyric_or_action="Mar & Kuku celebrate and wave goodbye", authority="transcript_verified"),
+        ]
 
     spec = ChapterSpec(
         episode_id=episode_id,
@@ -709,13 +740,16 @@ def generate_episode_assets(
         cues=cues,
     )
 
-    spec_path = output_dir / "chapter_spec_ep03.json"
-    manifest_path = output_dir / "asset_manifest_ep03.json"
-    calib_path = output_dir / "registration_ep03.json"
+    for s_name in (f"chapter_spec_{episode_id.lower()}.json", "chapter_spec.json", "chapter_spec_ep03.json"):
+        (output_dir / s_name).write_text(spec.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    for m_name in (f"asset_manifest_{episode_id.lower()}.json", "asset_manifest.json", "asset_manifest_ep03.json"):
+        (output_dir / m_name).write_text(manifest.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    for c_name in (f"registration_{episode_id.lower()}.json", "registration.json", "registration_ep03.json"):
+        (output_dir / c_name).write_text(calibration.model_dump_json(indent=2) + "\n", encoding="utf-8")
 
-    spec_path.write_text(spec.model_dump_json(indent=2) + "\n", encoding="utf-8")
-    manifest_path.write_text(manifest.model_dump_json(indent=2) + "\n", encoding="utf-8")
-    calib_path.write_text(calibration.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    spec_path = output_dir / f"chapter_spec_{episode_id.lower()}.json"
+    manifest_path = output_dir / f"asset_manifest_{episode_id.lower()}.json"
+    calib_path = output_dir / f"registration_{episode_id.lower()}.json"
 
     intake_receipt = {
         "step": "step_6_asset_generation_and_intake",
@@ -754,10 +788,33 @@ def assemble_episode_palmier(
     policy: RootPolicy,
     store: StateStore | None = None,
 ) -> dict[str, Any]:
-    """Compile TimelinePlan and assemble native .palmier project for Episode 003."""
-    spec_path = output_dir / "chapter_spec_ep03.json"
-    manifest_path = output_dir / "asset_manifest_ep03.json"
-    calib_path = output_dir / "registration_ep03.json"
+    """Compile TimelinePlan and assemble native .palmier project for the selected chapter."""
+    spec_path = None
+    for candidate_name in (f"chapter_spec_{episode_id.lower()}.json", "chapter_spec.json", "chapter_spec_ep03.json"):
+        p = output_dir / candidate_name
+        if p.is_file():
+            spec_path = p
+            break
+    if not spec_path:
+        raise FileNotFoundError(f"Chapter spec not found in {output_dir}")
+
+    manifest_path = None
+    for candidate_name in (f"asset_manifest_{episode_id.lower()}.json", "asset_manifest.json", "asset_manifest_ep03.json"):
+        p = output_dir / candidate_name
+        if p.is_file():
+            manifest_path = p
+            break
+    if not manifest_path:
+        raise FileNotFoundError(f"Asset manifest not found in {output_dir}")
+
+    calib_path = None
+    for candidate_name in (f"registration_{episode_id.lower()}.json", "registration.json", "registration_ep03.json"):
+        p = output_dir / candidate_name
+        if p.is_file():
+            calib_path = p
+            break
+    if not calib_path:
+        raise FileNotFoundError(f"Registration calibration not found in {output_dir}")
 
     spec = ChapterSpec.model_validate_json(spec_path.read_text(encoding="utf-8"))
     manifest = AssetManifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
@@ -786,11 +843,17 @@ def assemble_episode_palmier(
             manifest_path.write_text(manifest.model_dump_json(indent=2) + "\n", encoding="utf-8")
 
     plan = compile_scene(spec, manifest, calibration)
-    plan_path = output_dir / "timeline_plan_ep03.json"
+    plan_path = output_dir / f"timeline_plan_{episode_id.lower()}.json"
     plan_path.write_text(plan.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    (output_dir / "timeline_plan_ep03.json").write_text(plan.model_dump_json(indent=2) + "\n", encoding="utf-8")
 
     adapter = PalmierAdapter(policy)
-    project_path = output_dir / f"{episode_id}_Counting_Flowers_v001.palmier"
+    existing_projects = list(output_dir.glob("*.palmier"))
+    if existing_projects:
+        project_path = existing_projects[0]
+    else:
+        project_name = f"{episode_id}_Counting_Flowers_v001.palmier" if "ep03" in episode_id.lower() else f"{episode_id}_Color_Garden_v001.palmier"
+        project_path = output_dir / project_name
 
     from mk_studio.runner import StepRunner
     db_path = policy.output_root_resolved / "state.db"
@@ -855,13 +918,17 @@ def export_episode_mp4(
     output_dir: Path,
     policy: RootPolicy,
     store: StateStore | None = None,
-    preferred_renderer: str = "deterministic_ffmpeg_preview",
+    preferred_renderer: str = "native_palmier",
     allow_preview_fallback: bool = True,
 ) -> dict[str, Any]:
     """Render 1080p30 MP4 from the native Palmier project, verify native .palmier project structure, and run full QA verification."""
-    project_path = output_dir / f"{episode_id}_Counting_Flowers_v001.palmier"
-    plan_path = output_dir / "timeline_plan_ep03.json"
-    mp4_path = output_dir / f"{episode_id}_Counting_Flowers_1080p30_v001.mp4"
+    existing_projects = list(output_dir.glob("*.palmier"))
+    project_path = existing_projects[0] if existing_projects else (output_dir / f"{episode_id}_v001.palmier")
+
+    plan_candidates = list(output_dir.glob("timeline_plan*.json"))
+    plan_path = plan_candidates[0] if plan_candidates else (output_dir / "timeline_plan.json")
+    mp4_name = f"{episode_id}_Counting_Flowers_1080p30_v001.mp4" if "ep03" in episode_id.lower() else f"{episode_id}_1080p30_v001.mp4"
+    mp4_path = output_dir / mp4_name
 
     plan = TimelinePlan.model_validate_json(plan_path.read_text(encoding="utf-8"))
     adapter = PalmierAdapter(policy)
@@ -874,7 +941,13 @@ def export_episode_mp4(
     if preferred_renderer == "native_palmier":
         palmier_export_attempted = True
         try:
-            native_export_receipt = adapter.export_video_mp4(mp4_path)
+            state = adapter.read_state()
+            active_tl_id = state.timeline_id
+            native_export_receipt = adapter.export_video_mp4(
+                mp4_path,
+                project_path=project_path,
+                timeline_id=active_tl_id,
+            )
             renderer_used = "native_palmier"
         except Exception as exc:
             palmier_error = str(exc)
@@ -882,26 +955,47 @@ def export_episode_mp4(
                 renderer_used = "deterministic_ffmpeg_preview"
                 adapter.render_timeline_plan_to_mp4(plan, mp4_path)
             else:
-                raise
+                raise PalmierEditorError(f"Native Palmier export failed: {exc}") from exc
     elif preferred_renderer == "deterministic_ffmpeg_preview":
         renderer_used = "deterministic_ffmpeg_preview"
         adapter.render_timeline_plan_to_mp4(plan, mp4_path)
     else:
         raise ValueError(f"Unknown preferred_renderer: {preferred_renderer}")
 
+    hold_marker = next((m for m in plan.markers if "hold" in m.marker_key.lower() or "hold" in m.name.lower()), None)
+    if hold_marker:
+        if hold_marker.duration_frames > 0:
+            hold_range = (hold_marker.start_frame, hold_marker.start_frame + hold_marker.duration_frames)
+        else:
+            subsequent = [m.start_frame for m in plan.markers if m.start_frame > hold_marker.start_frame]
+            end_f = min(subsequent) if subsequent else hold_marker.start_frame + 120
+            hold_range = (hold_marker.start_frame, end_f)
+    elif "ch02" in episode_id.lower():
+        hold_range = (672, 792)
+    else:
+        hold_range = (501, 620)
+
     qa_report = verify_exported_mp4(
         mp4_path,
         expected_frames=plan.total_frames,
         expected_duration_seconds=plan.total_frames / 30.0,
+        hold_range=hold_range,
     )
     palmier_qa = verify_native_palmier_project(project_path)
+    is_preview = (renderer_used == "deterministic_ffmpeg_preview")
+    
+    # Accurate status: preview fallback must NOT pass native-export acceptance
+    if qa_report["passed"] and palmier_qa["passed"]:
+        status_val = "completed" if not is_preview else "preview_fallback_rendered"
+    else:
+        status_val = "failed"
 
     receipt = {
         "step": "step_8_final_mp4_export",
         "episode_id": episode_id,
-        "status": "completed" if (qa_report["passed"] and palmier_qa["passed"]) else "failed",
+        "status": status_val,
         "renderer": renderer_used,
-        "is_preview_render": (renderer_used == "deterministic_ffmpeg_preview"),
+        "is_preview_render": is_preview,
         "native_palmier_attempted": palmier_export_attempted,
         "native_palmier_error": palmier_error,
         "native_export_receipt": native_export_receipt,

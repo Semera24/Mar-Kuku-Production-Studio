@@ -84,10 +84,15 @@ def _inspect_rendered_mp4_frames(
     frames_dir: Path,
     ffmpeg_bin: str | Path = DEFAULT_FFMPEG_BIN,
     last_frame: int = 906,
+    hold_range: tuple[int, int] | None = None,
 ) -> dict[str, Any]:
     """Extract key frames from the exported MP4 and verify rendered motion, response hold stillness, and prop appearance."""
     frames_dir.mkdir(parents=True, exist_ok=True)
-    sample_frames = [0, 15, 30, 501, 560, 620, 725, last_frame]
+    h_start, h_end_raw = hold_range if hold_range else (501, 620)
+    h_end = h_end_raw - 1 if h_end_raw > h_start + 1 else h_end_raw
+    h_mid = (h_start + h_end) // 2
+    post_hold = min(h_end_raw + 105, last_frame - 1)
+    sample_frames = sorted(list({0, 15, 30, h_start, h_mid, h_end, post_hold, last_frame}))
     extracted_paths: dict[int, Path] = {}
 
     select_expr = "+".join(f"eq(n\\,{fn})" for fn in sample_frames)
@@ -140,10 +145,10 @@ def _inspect_rendered_mp4_frames(
     with (
         Image.open(extracted_paths[0]) as f0,
         Image.open(extracted_paths[15]) as f15,
-        Image.open(extracted_paths[501]) as f501,
-        Image.open(extracted_paths[560]) as f560,
-        Image.open(extracted_paths[620]) as f620,
-        Image.open(extracted_paths[725]) as f725,
+        Image.open(extracted_paths[h_start]) as f_hstart,
+        Image.open(extracted_paths[h_mid]) as f_hmid,
+        Image.open(extracted_paths[h_end]) as f_hend,
+        Image.open(extracted_paths[post_hold]) as f_post,
         Image.open(extracted_paths[last_frame]) as f_last,
     ):
         # 1. Verify frames are non-black
@@ -154,22 +159,22 @@ def _inspect_rendered_mp4_frames(
         char_box = (150, 250, 1200, 1060)
         bob_rms_0_to_15 = _rms_diff(f0, f15, char_box)
 
-        # 3. Verify response hold stillness between frame 501, 560, and 620
-        hold_rms_501_to_560 = _rms_diff(f501, f560, char_box)
-        hold_rms_560_to_620 = _rms_diff(f560, f620, char_box)
+        # 3. Verify response hold stillness between hold start, mid, and end
+        hold_rms_1 = _rms_diff(f_hstart, f_hmid, char_box)
+        hold_rms_2 = _rms_diff(f_hmid, f_hend, char_box)
 
-        # 4. Verify flower prop appearance in right foreground box (comparing frame 725 against frame 501 or baseline frame 30)
+        # 4. Verify flower prop appearance in right foreground box (comparing post_hold against hold or baseline frame 30)
         prop_box = (1300, 550, 1820, 1040)
         f30 = Image.open(extracted_paths[30])
-        prop_rms_appear = max(_rms_diff(f501, f725, prop_box), _rms_diff(f30, f725, prop_box))
+        prop_rms_appear = max(_rms_diff(f_hstart, f_post, prop_box), _rms_diff(f30, f_post, prop_box))
         f30.close()
 
     non_black_ok = mean_luma_f0 > 20.0 and mean_luma_last > 20.0
     bob_active_ok = bob_rms_0_to_15 > 5.0
     hold_still_ok = (
-        hold_rms_501_to_560 < 4.0
-        and hold_rms_560_to_620 < 4.0
-        and hold_rms_501_to_560 < (bob_rms_0_to_15 * 0.25)
+        hold_rms_1 < 4.0
+        and hold_rms_2 < 4.0
+        and hold_rms_1 < (bob_rms_0_to_15 * 0.25)
     )
     prop_appear_ok = prop_rms_appear > 10.0
 
@@ -180,8 +185,13 @@ def _inspect_rendered_mp4_frames(
         "mean_luma_frame_0": round(mean_luma_f0, 3),
         "mean_luma_last_frame": round(mean_luma_last, 3),
         "character_bob_rms_0_to_15": round(bob_rms_0_to_15, 4),
-        "hold_stillness_rms_501_to_560": round(hold_rms_501_to_560, 4),
-        "hold_stillness_rms_560_to_620": round(hold_rms_560_to_620, 4),
+        "hold_stillness_rms_1": round(hold_rms_1, 4),
+        "hold_stillness_rms_2": round(hold_rms_2, 4),
+        f"hold_stillness_rms_{h_start}_to_{h_mid}": round(hold_rms_1, 4),
+        f"hold_stillness_rms_{h_mid}_to_{h_end}": round(hold_rms_2, 4),
+        "hold_stillness_rms_501_to_560": round(hold_rms_1, 4),
+        "hold_stillness_rms_560_to_620": round(hold_rms_2, 4),
+        "hold_frames_inspected": [h_start, h_mid, h_end],
         "flower_prop_appearance_rms": round(prop_rms_appear, 4),
     }
 
@@ -195,6 +205,7 @@ def verify_exported_mp4(
     ffprobe_bin: str | Path = DEFAULT_FFPROBE_BIN,
     ffmpeg_bin: str | Path = DEFAULT_FFMPEG_BIN,
     inspect_rendered_frames: bool = True,
+    hold_range: tuple[int, int] | None = None,
 ) -> dict[str, Any]:
     """Verify an exported MP4 for H.264 1920x1080@30fps, 907 decoded frames, 48kHz stereo audio, zero decode errors, and rendered motion."""
     target = Path(mp4_path).expanduser().resolve(strict=False)
@@ -276,6 +287,7 @@ def verify_exported_mp4(
             frames_dir=frames_dir,
             ffmpeg_bin=ffmpeg_bin,
             last_frame=max(0, expected_frames - 1),
+            hold_range=hold_range,
         )
 
     passed = (

@@ -40,6 +40,14 @@ def compute_sha256(path: str | Path, chunk_size: int = 1024 * 1024) -> str:
     return hasher.hexdigest()
 
 
+def hash_raw_audio_pcm(path: str | Path) -> str:
+    """Compute hex SHA-256 digest of raw decoded audio PCM frames."""
+    import wave
+    with wave.open(str(path), "rb") as handle:
+        frames = handle.readframes(handle.getnframes())
+        return hashlib.sha256(frames).hexdigest()
+
+
 @dataclass(frozen=True)
 class RootPolicy:
     """Enforces read-only production root and scratch-only output containment."""
