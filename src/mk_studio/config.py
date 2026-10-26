@@ -5,14 +5,32 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
+import os
+import shutil
 
-DEFAULT_PRODUCTION_ROOT = Path("/Users/yonassayfu/Desktop/DoroNesh_2D_Animation")
-DEFAULT_REPO_ROOT = Path("/Users/yonassayfu/Projects/mar-kuku-production-studio")
-DEFAULT_SCRATCH_OUTPUT_ROOT = DEFAULT_REPO_ROOT / "scratch" / "ch01-proof"
+_THIS_REPO_ROOT = Path(__file__).resolve().parents[2]
+_SIBLING_PROD_ROOT = _THIS_REPO_ROOT.parent / "production"
+_HOME_PROD_ROOT = Path.home() / "Projects" / "Mar-and-Kuku" / "production"
+_MAC_PROD_ROOT = Path.home() / "Desktop" / "DoroNesh_2D_Animation"
+
+def _detect_production_root() -> Path:
+    env_root = os.environ.get("MK_STUDIO_PRODUCTION_ROOT")
+    if env_root:
+        return Path(env_root)
+    for candidate in (_SIBLING_PROD_ROOT, _HOME_PROD_ROOT, _MAC_PROD_ROOT):
+        if candidate.exists():
+            return candidate
+    return _SIBLING_PROD_ROOT
+
+DEFAULT_PRODUCTION_ROOT = _detect_production_root()
+DEFAULT_REPO_ROOT = Path(os.environ.get("MK_STUDIO_REPO_ROOT", str(_THIS_REPO_ROOT)))
+DEFAULT_SCRATCH_OUTPUT_ROOT = Path(
+    os.environ.get("MK_STUDIO_OUTPUT_DIR", str(DEFAULT_REPO_ROOT / "scratch" / "ch01-proof"))
+)
 DEFAULT_PALMIER_DOCUMENTS_DIR = Path.home() / "Documents" / "Palmier Pro"
 DEFAULT_PALMIER_MCP_URL = "http://127.0.0.1:19789/mcp"
-DEFAULT_FFMPEG_BIN = Path("/opt/homebrew/bin/ffmpeg")
-DEFAULT_FFPROBE_BIN = Path("/opt/homebrew/bin/ffprobe")
+DEFAULT_FFMPEG_BIN = Path(shutil.which("ffmpeg") or "/usr/bin/ffmpeg")
+DEFAULT_FFPROBE_BIN = Path(shutil.which("ffprobe") or "/usr/bin/ffprobe")
 
 
 class PathPolicyError(PermissionError):
@@ -62,6 +80,10 @@ class RootPolicy:
     @property
     def production_root_resolved(self) -> Path:
         return self.production_root.expanduser().resolve(strict=False)
+
+    @property
+    def repo_root(self) -> Path:
+        return DEFAULT_REPO_ROOT
 
     @property
     def output_root_resolved(self) -> Path:

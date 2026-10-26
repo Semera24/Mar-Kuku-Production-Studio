@@ -64,9 +64,18 @@ class BrowserAssetGenerator:
                        request_sha256=request_hash, download_folder=str(folder), conversation_url=self.URLS[provider])
         with CdpWebSocketClient(target['webSocketDebuggerUrl']) as ws:
             ws.call('Browser.setDownloadBehavior', {'behavior': 'allow', 'downloadPath': str(folder)})
-            instruction = prompt + ('\nGenerate an actual downloadable audio file, not written TTS advice.' if role == 'audio_master'
-                                    else '\nGenerate an actual downloadable PNG image.' +
-                                    (' Use a transparent background for this cutout.' if role in ('prop','character_pose') else ''))
+            instruction = prompt + (
+                '\nGenerate an actual downloadable audio file, not written TTS advice.' if role == 'audio_master'
+                else (
+                    '\nGenerate an actual downloadable PNG image.'
+                    '\nSTRICT PRODUCTION SPECIFICATION:'
+                    '\n- Output Format: High-resolution PNG with transparent background (or pure solid white background for clean alpha cutout).'
+                    '\n- Single-Subject Isolation: Exactly ONE animal, character, or prop centered. NEVER include multiple animals or multiple different species in one image.'
+                    '\n- Strict Biological Purity & Anti-Chimera Rule: 100% anatomical accuracy for toddler education. Absolutely NO hybrid, fantasy, or cross-blended animals (e.g. NO sheep with duck bills, NO duck-sheep chimeras, NO feathered mammals, NO wool on birds, NO human hands on animals). A sheep must be 100% sheep; a duck must be 100% duck.'
+                    '\n- Visual Style: 2.5D children\'s storybook cartoon matching Mar & Kuku official poses, bold clean line art, bright friendly colors, gentle soft shading, expressive cute eyes.'
+                    + (' Use a transparent background for this cutout.' if role in ('prop', 'character_pose') else '')
+                )
+            )
             result = ws.call('Runtime.evaluate', {'expression': """(() => {
  const el=document.querySelector('#prompt-textarea,rich-textarea [contenteditable=true],.ProseMirror,[contenteditable=true],textarea');
  if(!el)return false;el.focus();

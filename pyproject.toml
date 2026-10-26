@@ -7,11 +7,14 @@ name = "mk-studio"
 version = "0.1.0"
 description = "Mar and Kuku local deterministic production studio CLI and Palmier MCP pipeline"
 readme = "docs/MK_Production_Studio_Requirements_v001.md"
-requires-python = ">=3.12,<3.13"
+requires-python = ">=3.12"
 dependencies = [
     "pydantic>=2.9.0",
     "pillow>=10.4.0",
     "mcp>=1.1.0",
+    "starlette>=0.38.0",
+    "uvicorn>=0.30.0",
+    "jsonschema>=4.20.0",
 ]
 
 [project.optional-dependencies]

@@ -52,8 +52,20 @@ def focus_application(app_name: str = "Google Chrome") -> bool:
     elif is_linux():
         wmctrl = shutil.which("wmctrl")
         if wmctrl and os.environ.get("DISPLAY"):
-            res = subprocess.run([wmctrl, "-a", app_name], capture_output=True, text=True, timeout=5)
-            return res.returncode == 0
+            for candidate in (app_name, "Chrome", "Chromium"):
+                res = subprocess.run([wmctrl, "-a", candidate], capture_output=True, text=True, timeout=5)
+                if res.returncode == 0:
+                    return True
+        xdotool = shutil.which("xdotool")
+        if xdotool and os.environ.get("DISPLAY"):
+            res = subprocess.run(
+                [xdotool, "search", "--onlyvisible", "--name", "Chrome", "windowactivate"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if res.returncode == 0:
+                return True
         return True  # Headless or Wayland/X11 without wmctrl
     return True
 

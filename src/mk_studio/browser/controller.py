@@ -17,10 +17,26 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+import shutil
 from mk_studio.config import RootPolicy, compute_sha256
+from mk_studio.os_compat import focus_application
 from mk_studio.state import StateStore
 
-DEFAULT_CHROME_BIN = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+_CHROME_CANDIDATES = (
+    os.environ.get("CHROME_BIN", ""),
+    shutil.which("google-chrome") or "",
+    shutil.which("google-chrome-stable") or "",
+    shutil.which("chromium") or "",
+    shutil.which("chromium-browser") or "",
+    "/usr/bin/google-chrome",
+    "/usr/bin/google-chrome-stable",
+    "/usr/bin/chromium",
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+)
+DEFAULT_CHROME_BIN = next(
+    (Path(c) for c in _CHROME_CANDIDATES if c and Path(c).is_file()),
+    Path("/usr/bin/google-chrome"),
+)
 DEFAULT_CDP_PORT = 9222
 
 
@@ -39,7 +55,7 @@ class BrowserCancelledError(BrowserControlError):
 class CdpWebSocketClient:
     """Minimal RFC 6455 WebSocket client for local Chrome DevTools Protocol connections."""
 
-    def __init__(self, ws_url: str, timeout_seconds: float = 15.0) -> None:
+    def __init__(self, ws_url: str, timeout_seconds: float = 420.0) -> None:
         parsed = urllib.parse.urlparse(ws_url)
         self.host = parsed.hostname or "127.0.0.1"
         self.port = parsed.port or DEFAULT_CDP_PORT
@@ -180,17 +196,100 @@ class BrowserController:
         self.profile_dir = self.policy.output_root_resolved / "browser-profile"
         self.downloads_dir = self.policy.output_root_resolved / "browser-downloads"
         self.captures_dir = self.policy.output_root_resolved / "browser-captures"
+        self.session_urls_file = self.policy.output_root_resolved / "active_project_sessions.json"
         self.owner_takeover: bool = False
         self.cancel_event = cancel_event or threading.Event()
         self._proc: subprocess.Popen[bytes] | None = None
+        self._active_target_id: str | None = None
+
+    @staticmethod
+    def _domain_to_service_key(url_or_domain: str) -> str:
+        low = (url_or_domain or "").lower()
+        if "chatgpt.com" in low:
+            return "chatgpt"
+        if "gemini.google.com" in low:
+            return "gemini"
+        if "manus.im" in low:
+            return "manus"
+        if "flowmusic.app" in low:
+            return "flowmusic"
+        if "capcut.com" in low:
+            return "capcut"
+        if "youtube.com" in low:
+            return "youtube"
+        return low
+
+    @classmethod
+    def _is_specific_session_url(cls, service_key: str, url: str) -> bool:
+        """Return True if url points to a specific active chat/session rather than the bare service home page."""
+        u = (url or "").strip()
+        if not u:
+            return False
+        sk = cls._domain_to_service_key(service_key)
+        if sk == "chatgpt":
+            return "chatgpt.com" in u.lower() and ("/c/" in u or "/g/" in u)
+        if sk == "gemini":
+            if "gemini.google.com/app/" in u:
+                tail = u.split("gemini.google.com/app/", 1)[1].strip("/?")
+                return len(tail) > 2
+            return False
+        if sk == "manus":
+            if "manus.im/app/" in u:
+                tail = u.split("manus.im/app/", 1)[1].strip("/?")
+                return len(tail) > 2
+            return False
+        if sk == "flowmusic":
+            return "flowmusic.app/session/" in u.lower()
+        return False
+
+    def load_session_urls(self) -> dict[str, str]:
+        if self.session_urls_file.is_file():
+            try:
+                data = json.loads(self.session_urls_file.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    return {str(k): str(v) for k, v in data.items() if v}
+            except Exception:
+                pass
+        return {}
+
+    def get_session_url(self, service_key: str) -> str | None:
+        sk = self._domain_to_service_key(service_key)
+        return self.load_session_urls().get(sk)
+
+    def set_session_url(self, service_key: str, url: str) -> None:
+        """Persist the active project conversation/session URL for a service so subsequent steps return to the same chat."""
+        u = (url or "").strip()
+        if not u:
+            return
+        sk = self._domain_to_service_key(service_key)
+        current_map = self.load_session_urls()
+        existing = current_map.get(sk, "")
+        # Never overwrite a specific conversation URL (e.g. /c/123) with a generic home URL (e.g. https://chatgpt.com/)
+        if existing and self._is_specific_session_url(sk, existing) and not self._is_specific_session_url(sk, u):
+            return
+        current_map[sk] = u
+        try:
+            self.session_urls_file.parent.mkdir(parents=True, exist_ok=True)
+            self.session_urls_file.write_text(json.dumps(current_map, indent=2) + "\n", encoding="utf-8")
+        except Exception:
+            pass
+
+    def clear_session_urls(self) -> None:
+        """Clear pinned project conversation URLs when starting a brand-new project."""
+        try:
+            if self.session_urls_file.is_file():
+                self.session_urls_file.unlink()
+        except Exception:
+            pass
 
     def request_stop(self) -> None:
         """Signal immediate cancellation of any active browser automation wait/action."""
         self.cancel_event.set()
 
     def reset_stop(self) -> None:
-        """Clear the cancellation signal so new or resumed browser operations can proceed."""
+        """Clear the cancellation signal and resume from takeover so new or resumed browser operations can proceed."""
         self.cancel_event.clear()
+        self.owner_takeover = False
 
     def _check_cancel(self) -> None:
         if self.cancel_event.is_set():
@@ -231,12 +330,13 @@ class BrowserController:
                 "--disable-backgrounding-occluded-windows",
                 "--disable-renderer-backgrounding",
                 "--new-window",
-                "about:blank",
+                "https://chatgpt.com/",
             ]
             self._proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                start_new_session=True,
             )
             deadline = time.monotonic() + 12.0
             while time.monotonic() < deadline:
@@ -266,6 +366,32 @@ class BrowserController:
             },
         }
 
+    def _close_target(self, target_id: str) -> None:
+        if not target_id:
+            return
+        try:
+            req = urllib.request.Request(f"{self.base_http_url}/json/close/{target_id}", method="GET")
+            with urllib.request.urlopen(req, timeout=2.0):
+                pass
+        except Exception:
+            pass
+
+    @staticmethod
+    def _default_url_for_service(service_key: str, fallback_pattern: str) -> str:
+        defaults = {
+            "chatgpt": "https://chatgpt.com/",
+            "gemini": "https://gemini.google.com/app",
+            "manus": "https://manus.im/app",
+            "flowmusic": "https://www.flowmusic.app/",
+            "capcut": "https://www.capcut.com/my-edit?start_tab=video",
+            "youtube": "https://studio.youtube.com/",
+        }
+        if service_key in defaults:
+            return defaults[service_key]
+        if fallback_pattern.startswith("http://") or fallback_pattern.startswith("https://"):
+            return fallback_pattern
+        return f"https://{fallback_pattern}/"
+
     def _get_or_create_page_target(self, preferred_url_pattern: str | None = None) -> dict[str, Any]:
         targets = self._http_json("/json/list")
         pages = [
@@ -277,18 +403,88 @@ class BrowserController:
             and not str(t.get("url", "")).startswith("devtools://")
         ]
         if preferred_url_pattern:
+            pat = preferred_url_pattern.lower()
+            sk = self._domain_to_service_key(pat)
+            saved_url = self.get_session_url(sk)
+            matching = [p for p in pages if pat in str(p.get("url", "")).lower()]
+            if matching:
+                def _rank_tab(p: dict[str, Any]) -> tuple[int, int]:
+                    u = str(p.get("url", "")).strip()
+                    exact_saved = 1 if (saved_url and u.rstrip("/") == saved_url.rstrip("/")) else 0
+                    is_specific = 1 if self._is_specific_session_url(sk, u) else 0
+                    return (exact_saved, is_specific)
+
+                matching.sort(key=_rank_tab, reverse=True)
+                chosen = matching[0]
+                # Close any duplicate tabs for the same service so Chrome strictly keeps 1 tab per service
+                for dup in matching[1:]:
+                    dup_id = str(dup.get("id") or "")
+                    if dup_id and dup_id != str(chosen.get("id") or ""):
+                        self._close_target(dup_id)
+
+                chosen_url = str(chosen.get("url") or "")
+                if self._is_specific_session_url(sk, chosen_url):
+                    self.set_session_url(sk, chosen_url)
+
+                tid = chosen.get("id")
+                if tid:
+                    self._active_target_id = str(tid)
+                    try:
+                        with CdpWebSocketClient(str(chosen["webSocketDebuggerUrl"]), timeout_seconds=3.0) as ws:
+                            ws.call("Page.bringToFront")
+                    except Exception:
+                        pass
+                return chosen
+
+            # No tab for this service exists yet: create a dedicated tab instead of overwriting another service's tab
+            initial_url = saved_url or self._default_url_for_service(sk, preferred_url_pattern)
+            if pages:
+                try:
+                    with CdpWebSocketClient(str(pages[0]["webSocketDebuggerUrl"]), timeout_seconds=4.0) as ws:
+                        res = ws.call("Target.createTarget", {"url": initial_url})
+                        new_tid = str(res.get("targetId") or "")
+                    time.sleep(0.5)
+                    refreshed = self._http_json("/json/list")
+                    for t in refreshed:
+                        if isinstance(t, dict) and (str(t.get("id")) == new_tid or pat in str(t.get("url", "")).lower()):
+                            self._active_target_id = str(t.get("id") or "")
+                            return t
+                except Exception:
+                    pass
+
+        # Find whichever tab is currently visible in the Chrome window so we never yank the user to another tab
+        for p in pages:
+            if str(p.get("url", "")).strip() in ("", "about:blank", "chrome://newtab/"):
+                continue
+            try:
+                with CdpWebSocketClient(str(p["webSocketDebuggerUrl"]), timeout_seconds=1.5) as ws:
+                    ev = ws.call(
+                        "Runtime.evaluate",
+                        {"expression": "document.visibilityState === 'visible'", "returnByValue": True},
+                    )
+                    if (ev.get("result") or {}).get("value") is True:
+                        if p.get("id"):
+                            self._active_target_id = str(p["id"])
+                        return p
+            except Exception:
+                pass
+        if self._active_target_id:
             for p in pages:
-                if preferred_url_pattern.lower() in str(p.get("url", "")).lower():
-                    tid = p.get("id")
-                    if tid:
-                        try:
-                            self._http_json(f"/json/activate/{tid}")
-                        except Exception:
-                            pass
+                if str(p.get("id")) == self._active_target_id:
                     return p
+        non_blank_pages = [
+            p
+            for p in pages
+            if str(p.get("url", "")).strip() not in ("", "about:blank", "chrome://newtab/")
+        ]
+        if non_blank_pages:
+            chosen = non_blank_pages[0]
+            if chosen.get("id"):
+                self._active_target_id = str(chosen["id"])
+            return chosen
         if pages:
             return pages[0]
-        return self._http_json("/json/new?about:blank", method="PUT")
+        return self._http_json("/json/new?https://chatgpt.com/", method="PUT")
 
     def _require_not_in_takeover(self) -> None:
         self._check_cancel()
@@ -316,6 +512,183 @@ class BrowserController:
             and not str(t.get("url", "")).startswith("devtools://")
         ]
 
+    def open_or_focus_tab(self, url: str, *, capture_preview: bool = True) -> dict[str, Any]:
+        """Open a URL in a new Chrome tab (or activate the existing tab for that domain without reloading it)."""
+        self.ensure_visible_session()
+        parsed = urllib.parse.urlparse(url)
+        domain = (parsed.netloc or url).lower()
+        sk = self._domain_to_service_key(domain)
+        saved_url = self.get_session_url(sk)
+        target_url = saved_url if (saved_url and not self._is_specific_session_url(sk, url)) else url
+
+        tabs = self.list_open_tabs()
+        matching = [t for t in tabs if domain and domain in str(t.get("url", "")).lower()]
+        if matching:
+            # Prefer the tab that already has an active project session URL
+            matching.sort(
+                key=lambda t: (
+                    1 if (saved_url and str(t.get("url", "")).rstrip("/") == saved_url.rstrip("/")) else 0,
+                    1 if self._is_specific_session_url(sk, str(t.get("url", ""))) else 0,
+                ),
+                reverse=True,
+            )
+            chosen = matching[0]
+            for dup in matching[1:]:
+                if dup.get("id") and dup.get("id") != chosen.get("id"):
+                    self._close_target(str(dup["id"]))
+            tid = chosen.get("id")
+            if tid:
+                self._active_target_id = str(tid)
+            try:
+                with CdpWebSocketClient(str(chosen["webSocketDebuggerUrl"]), timeout_seconds=4.0) as ws:
+                    ws.call("Page.bringToFront")
+                    ev = ws.call("Runtime.evaluate", {"expression": "window.location.href", "returnByValue": True})
+                    live_href = str((ev.get("result") or {}).get("value") or chosen.get("url") or "")
+                    if self._is_specific_session_url(sk, live_href):
+                        self.set_session_url(sk, live_href)
+                        chosen["url"] = live_href
+                    elif saved_url and self._is_specific_session_url(sk, saved_url) and live_href.rstrip("/") != saved_url.rstrip("/"):
+                        ws.call("Page.enable")
+                        ws.call("Page.navigate", {"url": saved_url})
+                        chosen["url"] = saved_url
+            except Exception:
+                pass
+            focus_application("Google Chrome")
+            if capture_preview:
+                try:
+                    time.sleep(0.3)
+                    self.capture_screenshot("studio_live_preview.png", bring_to_front=False, record_task=False)
+                except Exception:
+                    pass
+            return {"status": "activated", "tab": chosen, "pinned_session_url": self.get_session_url(sk)}
+
+        # Create a new tab via Target.createTarget over CDP WebSocket
+        base_target = self._get_or_create_page_target()
+        ws_url = str(base_target["webSocketDebuggerUrl"])
+        # If the only open tab is about:blank, navigate it directly instead of leaving an extra blank tab
+        if len(tabs) == 1 and str(tabs[0].get("url", "")) in ("about:blank", "chrome://newtab/"):
+            with CdpWebSocketClient(ws_url, timeout_seconds=420.0) as ws:
+                ws.call("Page.enable")
+                ws.call("Page.navigate", {"url": target_url})
+            if tabs[0].get("id"):
+                self._active_target_id = str(tabs[0]["id"])
+            focus_application("Google Chrome")
+            if capture_preview:
+                try:
+                    time.sleep(1.0)
+                    self.capture_screenshot("studio_live_preview.png", bring_to_front=False, record_task=False)
+                except Exception:
+                    pass
+            return {"status": "navigated_blank_tab", "url": target_url}
+
+        with CdpWebSocketClient(ws_url, timeout_seconds=420.0) as ws:
+            res = ws.call("Target.createTarget", {"url": target_url})
+            new_tid = res.get("targetId")
+            if new_tid:
+                self._active_target_id = str(new_tid)
+                try:
+                    self._http_json(f"/json/activate/{new_tid}")
+                except Exception:
+                    pass
+        focus_application("Google Chrome")
+        if capture_preview:
+            try:
+                time.sleep(1.0)
+                self.capture_screenshot("studio_live_preview.png", bring_to_front=False, record_task=False)
+            except Exception:
+                pass
+        return {"status": "created_tab", "url": target_url, "targetId": new_tid}
+
+    def open_login_workspace_tabs(self) -> dict[str, Any]:
+        """Open all standard AI Brain & Editor tabs in the persistent Chrome profile for user login."""
+        workspace_urls = [
+            "https://chatgpt.com/",
+            "https://gemini.google.com/app",
+            "https://manus.im/app",
+            "https://www.flowmusic.app/",
+            "https://www.capcut.com/my-edit?start_tab=video",
+            "https://studio.youtube.com/",
+        ]
+        results = []
+        for u in workspace_urls:
+            try:
+                results.append(self.open_or_focus_tab(u, capture_preview=False))
+            except Exception as exc:
+                results.append({"status": "error", "url": u, "error": str(exc)})
+        # Focus ChatGPT tab first as the Master Brain and enable Owner Takeover so user can type undisturbed
+        self.owner_takeover = True
+        try:
+            self.open_or_focus_tab("https://chatgpt.com/", capture_preview=True)
+        except Exception:
+            pass
+        return {"status": "ok", "owner_takeover": True, "tabs_opened": results}
+
+    def check_workspace_logins(self) -> dict[str, Any]:
+        """Passively inspect open tabs in the managed Chrome window to verify login status without stealing focus."""
+        self.ensure_visible_session()
+        tabs = self.list_open_tabs()
+        inspect_js = """
+        (() => {
+          const url = location.href || '';
+          const title = document.title || '';
+          const bodyText = (document.body ? document.body.innerText : '').slice(0, 1200);
+          const hasPromptTextarea = Boolean(
+            document.querySelector('#prompt-textarea, textarea, [contenteditable="true"], rich-textarea')
+          );
+          const buttons = Array.from(document.querySelectorAll('a, button')).map(
+            el => (el.innerText || el.getAttribute('aria-label') || '').trim().toLowerCase()
+          );
+          const hasLoginButton = buttons.some(
+            t => t === 'log in' || t === 'sign in' || t === 'login' || t.startsWith('sign in ') || t.startsWith('log in ')
+          );
+          const isAuthPage = /accounts\\.google\\.com|auth0|login|signin|auth\\./i.test(url);
+          return {
+            url,
+            title,
+            hasPromptTextarea,
+            hasLoginButton,
+            isAuthPage,
+            excerpt: bodyText.replace(/\\s+/g, ' ').slice(0, 260)
+          };
+        })()
+        """
+        results = []
+        for t in tabs:
+            ws_url = t.get("webSocketDebuggerUrl")
+            if not ws_url:
+                continue
+            try:
+                with CdpWebSocketClient(str(ws_url), timeout_seconds=5.0) as ws:
+                    ev = ws.call("Runtime.evaluate", {"expression": inspect_js, "returnByValue": True})
+                    val = (ev.get("result") or {}).get("value") or {}
+                    url_str = str(val.get("url") or t.get("url") or "")
+                    has_login_btn = bool(val.get("hasLoginButton"))
+                    is_auth_page = bool(val.get("isAuthPage"))
+                    has_prompt = bool(val.get("hasPromptTextarea"))
+                    logged_in = (not is_auth_page) and (not has_login_btn or has_prompt)
+                    # Special check for ChatGPT guest mode ("Log in" button visible in top header)
+                    if "chatgpt.com" in url_str.lower() and has_login_btn:
+                        logged_in = False
+                    results.append({
+                        "id": t.get("id"),
+                        "url": url_str,
+                        "title": val.get("title") or t.get("title") or "",
+                        "logged_in": logged_in,
+                        "has_prompt_input": has_prompt,
+                        "has_login_button": has_login_btn,
+                        "is_auth_redirect": is_auth_page,
+                        "excerpt": val.get("excerpt", ""),
+                    })
+            except Exception as exc:
+                results.append({
+                    "id": t.get("id"),
+                    "url": t.get("url"),
+                    "title": t.get("title"),
+                    "logged_in": False,
+                    "error": str(exc),
+                })
+        return {"status": "ok", "tabs": results}
+
     def enter_owner_takeover(
         self,
         *,
@@ -325,22 +698,23 @@ class BrowserController:
         """Pause automated browser mutations so the owner can interact directly with the visible Chrome window."""
         self.ensure_visible_session()
         self.owner_takeover = True
-        dom = self.inspect_dom()
+        focus_application("Google Chrome")
+        tabs = self.list_open_tabs()
+        active_tab = tabs[0] if tabs else {}
         rec = self.store.record_browser_task(
             conversation_id=conversation_id,
             session_id=self.session_id,
-            url=dom.get("url", ""),
-            title=dom.get("title", ""),
+            url=active_tab.get("url", ""),
+            title=active_tab.get("title", ""),
             action_kind="enter_owner_takeover",
             status="paused_for_owner",
             owner_takeover=True,
-            summary={"reason": reason, "dom_state": dom},
+            summary={"reason": reason},
         )
         return {
             "status": "paused_for_owner",
             "owner_takeover": True,
             "reason": reason,
-            "dom_state": dom,
             "task": rec,
         }
 
@@ -370,10 +744,10 @@ class BrowserController:
             "task": rec,
         }
 
-    def inspect_dom(self) -> dict[str, Any]:
+    def inspect_dom(self, *, preferred_url_pattern: str | None = None) -> dict[str, Any]:
         """Inspect the active tab's current URL, title, readyState, interactive elements, and text excerpt."""
         self.ensure_visible_session()
-        target = self._get_or_create_page_target()
+        target = self._get_or_create_page_target(preferred_url_pattern=preferred_url_pattern)
         ws_url = str(target["webSocketDebuggerUrl"])
         js_expr = """
         (() => {
@@ -401,14 +775,20 @@ class BrowserController:
             });
         })()
         """
-        with CdpWebSocketClient(ws_url) as ws:
+        with CdpWebSocketClient(ws_url, timeout_seconds=420.0) as ws:
             ws.call("Runtime.enable")
             res = ws.call(
                 "Runtime.evaluate",
                 {"expression": js_expr, "returnByValue": True},
             )
             raw_val = (res.get("result") or {}).get("value") or "{}"
-            return json.loads(raw_val)
+            data = json.loads(raw_val)
+            live_url = str(data.get("url") or "")
+            if live_url:
+                sk = self._domain_to_service_key(live_url)
+                if self._is_specific_session_url(sk, live_url):
+                    self.set_session_url(sk, live_url)
+            return data
 
     def open_url(
         self,
@@ -416,18 +796,28 @@ class BrowserController:
         *,
         conversation_id: str | None = None,
         wait_seconds: float = 8.0,
+        force_navigate: bool = False,
     ) -> dict[str, Any]:
-        """Navigate the visible Chrome tab to a URL and wait for readyState === 'complete'."""
+        """Activate the dedicated Chrome tab for a URL's domain and navigate only if not already in the active project session."""
         self._require_not_in_takeover()
         self.ensure_visible_session()
         parsed = urllib.parse.urlparse(url)
         domain = parsed.netloc or url
+        sk = self._domain_to_service_key(domain)
+        saved_session_url = self.get_session_url(sk)
+        desired_url = (
+            saved_session_url
+            if (saved_session_url and not self._is_specific_session_url(sk, url))
+            else url
+        )
+
         target = self._get_or_create_page_target(preferred_url_pattern=domain)
         ws_url = str(target["webSocketDebuggerUrl"])
 
-        with CdpWebSocketClient(ws_url) as ws:
+        with CdpWebSocketClient(ws_url, timeout_seconds=420.0) as ws:
             ws.call("Page.enable")
             ws.call("Runtime.enable")
+            ws.call("Page.bringToFront")
             try:
                 ws.call(
                     "Page.setDownloadBehavior",
@@ -438,25 +828,43 @@ class BrowserController:
                 )
             except Exception:
                 pass
-            ws.call("Page.navigate", {"url": url})
-            deadline = time.monotonic() + wait_seconds
-            while time.monotonic() < deadline:
-                ev = ws.call(
-                    "Runtime.evaluate",
-                    {
-                        "expression": "document.readyState",
-                        "returnByValue": True,
-                    },
-                )
-                if (ev.get("result") or {}).get("value") == "complete":
-                    break
-                time.sleep(0.15)
+            href_ev = ws.call(
+                "Runtime.evaluate",
+                {"expression": "window.location.href", "returnByValue": True},
+            )
+            live_href = str((href_ev.get("result") or {}).get("value") or target.get("url") or "")
+            if self._is_specific_session_url(sk, live_href):
+                self.set_session_url(sk, live_href)
+                if not self._is_specific_session_url(sk, desired_url):
+                    desired_url = live_href
 
-        dom = self.inspect_dom()
+            should_navigate = force_navigate
+            if not should_navigate:
+                if not live_href or domain.lower() not in live_href.lower():
+                    should_navigate = True
+                elif self._is_specific_session_url(sk, desired_url) and live_href.rstrip("/") != desired_url.rstrip("/"):
+                    should_navigate = True
+
+            if should_navigate:
+                ws.call("Page.navigate", {"url": desired_url})
+                deadline = time.monotonic() + wait_seconds
+                while time.monotonic() < deadline:
+                    ev = ws.call(
+                        "Runtime.evaluate",
+                        {
+                            "expression": "document.readyState",
+                            "returnByValue": True,
+                        },
+                    )
+                    if (ev.get("result") or {}).get("value") == "complete":
+                        break
+                    time.sleep(0.15)
+
+        dom = self.inspect_dom(preferred_url_pattern=domain)
         rec = self.store.record_browser_task(
             conversation_id=conversation_id,
             session_id=self.session_id,
-            url=dom.get("url", url),
+            url=dom.get("url", desired_url),
             title=dom.get("title", ""),
             action_kind="open_url",
             status="succeeded",
@@ -470,23 +878,22 @@ class BrowserController:
         filename: str = "browser_capture.png",
         *,
         conversation_id: str | None = None,
+        bring_to_front: bool = False,
+        record_task: bool = True,
+        preferred_url_pattern: str | None = None,
     ) -> dict[str, Any]:
         """Capture a PNG screenshot of the visible Chrome viewport into scratch/ch01-proof/browser-captures/."""
         self.ensure_visible_session()
-        target = self._get_or_create_page_target()
+        target = self._get_or_create_page_target(preferred_url_pattern=preferred_url_pattern)
         ws_url = str(target["webSocketDebuggerUrl"])
         out_path = self.policy.resolve_output(
             self.captures_dir / filename,
             overwrite=True,
             create_parents=True,
         )
-        subprocess.run(
-            ["/usr/bin/open", "-a", "Google Chrome"],
-            capture_output=True,
-            timeout=5.0,
-            check=False,
-        )
-        with CdpWebSocketClient(ws_url) as ws:
+        if bring_to_front:
+            focus_application("Google Chrome")
+        with CdpWebSocketClient(ws_url, timeout_seconds=6.0) as ws:
             ws.call("Page.enable")
             ws.call("Page.bringToFront")
             res = ws.call("Page.captureScreenshot", {"format": "png"})
@@ -496,18 +903,20 @@ class BrowserController:
             out_path.write_bytes(base64.b64decode(b64_data))
 
         sha = compute_sha256(out_path)
-        dom = self.inspect_dom()
-        rec = self.store.record_browser_task(
-            conversation_id=conversation_id,
-            session_id=self.session_id,
-            url=dom.get("url", ""),
-            title=dom.get("title", ""),
-            action_kind="capture_screenshot",
-            status="succeeded",
-            artifact_path=str(out_path),
-            artifact_sha256=sha,
-            summary={"bytes": out_path.stat().st_size, "sha256": sha},
-        )
+        rec = None
+        if record_task:
+            dom = self.inspect_dom()
+            rec = self.store.record_browser_task(
+                conversation_id=conversation_id,
+                session_id=self.session_id,
+                url=dom.get("url", ""),
+                title=dom.get("title", ""),
+                action_kind="capture_screenshot",
+                status="succeeded",
+                artifact_path=str(out_path),
+                artifact_sha256=sha,
+                summary={"bytes": out_path.stat().st_size, "sha256": sha},
+            )
         return {
             "path": str(out_path),
             "sha256": sha,
@@ -592,7 +1001,7 @@ class BrowserController:
             return {"prompt": text_to_send, "response": last_response}
 
         turns: list[dict[str, Any]] = []
-        with CdpWebSocketClient(ws_url) as ws:
+        with CdpWebSocketClient(ws_url, timeout_seconds=420.0) as ws:
             ws.call("Runtime.enable")
             turns.append(_submit_and_read(ws, prompt, 1))
             if follow_up_prompt:
@@ -639,7 +1048,7 @@ class BrowserController:
         target = self._get_or_create_page_target()
         ws_url = str(target["webSocketDebuggerUrl"])
 
-        with CdpWebSocketClient(ws_url) as ws:
+        with CdpWebSocketClient(ws_url, timeout_seconds=420.0) as ws:
             ws.call("Page.enable")
             ws.call("DOM.enable")
             ws.call("Runtime.enable")
@@ -804,26 +1213,23 @@ class BrowserController:
         conversation_url: str | None = None,
         conversation_id: str | None = None,
         screenshot_name: str = "chatgpt_web_capture.png",
-        timeout_seconds: float = 90.0,
+        timeout_seconds: float = 180.0,
     ) -> dict[str, Any]:
         """Submit a real prompt on https://chatgpt.com/ in the managed Chrome browser and extract the streaming response."""
         self._require_not_in_takeover()
-        target_url = conversation_url or "https://chatgpt.com/"
+        saved_url = self.get_session_url("chatgpt")
+        target_url = (
+            conversation_url
+            if self._is_specific_session_url("chatgpt", str(conversation_url or ""))
+            else (saved_url or "https://chatgpt.com/")
+        )
+        self.open_url(target_url, conversation_id=conversation_id, wait_seconds=12.0)
         target = self._get_or_create_page_target(preferred_url_pattern="chatgpt.com")
-        current_url = str(target.get("url") or "")
-        if not current_url.startswith("https://chatgpt.com") or (
-            conversation_url and current_url != conversation_url
-        ):
-            self.open_url(target_url, conversation_id=conversation_id, wait_seconds=12.0)
-            time.sleep(2.5)
-            target = self._get_or_create_page_target(preferred_url_pattern="chatgpt.com")
-        else:
-            self.ensure_visible_session()
 
         ws_url = str(target["webSocketDebuggerUrl"])
         escaped_prompt = json.dumps(prompt)
 
-        with CdpWebSocketClient(ws_url) as ws:
+        with CdpWebSocketClient(ws_url, timeout_seconds=420.0) as ws:
             ws.call("Runtime.enable")
             ws.call("Page.enable")
             ws.call("Page.bringToFront")
@@ -834,7 +1240,7 @@ class BrowserController:
                 {
                     "expression": """
                     (() => {
-                        const nodes = document.querySelectorAll('[data-message-author-role="assistant"]');
+                        const nodes = document.querySelectorAll('[class*="DilResponseRoot"], [class*="ResponseRoot"], [data-message-author-role="assistant"], [class*="agent-turn"], .markdown');
                         const bodyText = document.body ? document.body.innerText : '';
                         const saidParts = bodyText.split('ChatGPT said:');
                         return JSON.stringify({
@@ -850,6 +1256,28 @@ class BrowserController:
             before_nodes = int(before_info.get("nodeCount") or 0)
             before_said = int(before_info.get("saidCount") or 0)
 
+            # Dismiss any promo/onboarding modal dialog (e.g. "Connect finances") if present
+            ws.call(
+                "Runtime.evaluate",
+                {
+                    "expression": """
+                    (() => {
+                        const dialogs = document.querySelectorAll('[role="dialog"]');
+                        dialogs.forEach(d => {
+                            const closeBtn = d.querySelector('button[aria-label*="Close"], button[aria-label*="close"], button:has(svg)');
+                            if (closeBtn) closeBtn.click();
+                        });
+                        document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true}));
+                        return dialogs.length;
+                    })()
+                    """,
+                    "returnByValue": True,
+                },
+            )
+            time.sleep(0.3)
+
+            rate_limit_detected = False
+            final_text = ""
             insert_ev = ws.call(
                 "Runtime.evaluate",
                 {
@@ -857,15 +1285,21 @@ class BrowserController:
                     (() => {{
                         const el = document.querySelector('#prompt-textarea, #mobile-composer-prompt, textarea[name="prompt"], div[contenteditable="true"], textarea');
                         if (!el) return JSON.stringify({{ok: false, error: 'ChatGPT prompt input not found'}});
+                        const textVal = {escaped_prompt};
                         el.focus();
                         if (el.tagName.toLowerCase() === 'textarea') {{
                             const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
-                            setter.call(el, {escaped_prompt});
+                            setter.call(el, textVal);
                             el.dispatchEvent(new Event('input', {{bubbles: true}}));
                         }} else {{
-                            el.innerHTML = '';
-                            document.execCommand('insertText', false, {escaped_prompt});
-                            el.dispatchEvent(new Event('input', {{bubbles: true}}));
+                            document.execCommand('selectAll', false, null);
+                            document.execCommand('insertText', false, textVal);
+                            if ((el.innerText || '').trim().length < 5) {{
+                                el.innerHTML = textVal.split('\\n').map(l => '<p>' + (l.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') || '<br>') + '</p>').join('');
+                                el.dispatchEvent(new InputEvent('input', {{bubbles: true, inputType: 'insertText', data: textVal}}));
+                            }} else {{
+                                el.dispatchEvent(new Event('input', {{bubbles: true}}));
+                            }}
                         }}
                         return JSON.stringify({{ok: true, tag: el.tagName, id: el.id}});
                     }})()
@@ -913,25 +1347,27 @@ class BrowserController:
             deadline = time.monotonic() + timeout_seconds
             stable_ticks = 0
             last_text = ""
-            final_text = ""
-            rate_limit_detected = False
             while time.monotonic() < deadline:
                 self._check_cancel()
-                time.sleep(0.75)
+                time.sleep(2.5)
                 poll_ev = ws.call(
                     "Runtime.evaluate",
                     {
                         "expression": """
                         (() => {
-                            const nodes = Array.from(document.querySelectorAll('[data-message-author-role="assistant"]'));
-                            const stopBtn = document.querySelector('button[data-testid="stop-button"], button[aria-label*="Stop"]');
-                            let nodeText = nodes.length ? nodes[nodes.length - 1].innerText.trim() : '';
+                            const nodes = Array.from(document.querySelectorAll('[class*="DilResponseRoot"], [class*="ResponseRoot"], [data-message-author-role="assistant"], [class*="agent-turn"], .markdown'));
+                            const stopBtn = document.querySelector('button[data-testid="stop-button"], button[aria-label*="Stop"], button:has(rect), button:has(svg rect)');
+                            let nodeText = '';
+                            if (nodes.length > 0) {
+                                const last = nodes[nodes.length - 1];
+                                nodeText = (last ? last.innerText : '').trim();
+                            }
                             const bodyText = document.body ? document.body.innerText : '';
                             const saidParts = bodyText.split('ChatGPT said:');
                             let saidText = '';
                             if (saidParts.length > 1) {
                                 let raw = saidParts[saidParts.length - 1];
-                                const cutMarkers = ['ChatGPT is AI and can make mistakes', 'Get responses tailored to you', 'Log in to get answers'];
+                                const cutMarkers = ['ChatGPT can make mistakes', 'ChatGPT is AI and can make mistakes', 'Get responses tailored to you', 'Log in to get answers'];
                                 for (const m of cutMarkers) {
                                     const idx = raw.indexOf(m);
                                     if (idx !== -1) raw = raw.slice(0, idx);
@@ -960,24 +1396,29 @@ class BrowserController:
                     break
 
                 cand = ""
-                if int(p_data.get("nodeCount") or 0) > before_nodes and p_data.get("nodeText"):
+                if p_data.get("nodeText"):
                     cand = str(p_data["nodeText"]).strip()
-                elif int(p_data.get("saidCount") or 0) > before_said and p_data.get("saidText"):
+                elif p_data.get("saidText"):
                     cand = str(p_data["saidText"]).strip()
 
                 if cand and not p_data.get("streaming"):
                     if cand == last_text and len(cand) > 15:
                         stable_ticks += 1
-                        if stable_ticks >= 3:
+                        if stable_ticks >= 2:
                             final_text = cand
                             break
                     else:
                         last_text = cand
                         stable_ticks = 0
 
-        shot = self.capture_screenshot(screenshot_name, conversation_id=conversation_id)
-        dom = self.inspect_dom()
+        shot = self.capture_screenshot(
+            screenshot_name,
+            conversation_id=conversation_id,
+            preferred_url_pattern="chatgpt.com",
+        )
+        dom = self.inspect_dom(preferred_url_pattern="chatgpt.com")
         live_url = str(dom.get("url") or target_url)
+        self.set_session_url("chatgpt", live_url)
         if rate_limit_detected:
             rec = self.store.record_browser_task(
                 conversation_id=conversation_id,
@@ -1038,22 +1479,18 @@ class BrowserController:
     ) -> dict[str, Any]:
         """Submit a real prompt on https://gemini.google.com/app in the managed Chrome browser and extract the streaming response."""
         self._require_not_in_takeover()
-        target_url = conversation_url or "https://gemini.google.com/app"
-        dom_now = self.inspect_dom() if self.is_reachable() else {}
-        current_url = str(dom_now.get("url") or "")
-        if not current_url.startswith("https://gemini.google.com") or (
-            conversation_url and current_url != conversation_url
-        ):
-            self.open_url(target_url, conversation_id=conversation_id, wait_seconds=12.0)
-            time.sleep(2.5)
-        else:
-            self.ensure_visible_session()
-
-        target = self._get_or_create_page_target()
+        saved_url = self.get_session_url("gemini")
+        target_url = (
+            conversation_url
+            if self._is_specific_session_url("gemini", str(conversation_url or ""))
+            else (saved_url or "https://gemini.google.com/app")
+        )
+        self.open_url(target_url, conversation_id=conversation_id, wait_seconds=12.0)
+        target = self._get_or_create_page_target(preferred_url_pattern="gemini.google.com")
         ws_url = str(target["webSocketDebuggerUrl"])
         escaped_prompt = json.dumps(prompt)
 
-        with CdpWebSocketClient(ws_url) as ws:
+        with CdpWebSocketClient(ws_url, timeout_seconds=420.0) as ws:
             ws.call("Runtime.enable")
             ws.call("Page.enable")
             ws.call("Page.bringToFront")
@@ -1134,7 +1571,7 @@ class BrowserController:
             final_text = ""
             while time.monotonic() < deadline:
                 self._check_cancel()
-                time.sleep(0.75)
+                time.sleep(2.5)
                 poll_ev = ws.call(
                     "Runtime.evaluate",
                     {
@@ -1188,9 +1625,14 @@ class BrowserController:
                         last_text = cand
                         stable_ticks = 0
 
-        shot = self.capture_screenshot(screenshot_name, conversation_id=conversation_id)
-        dom = self.inspect_dom()
+        shot = self.capture_screenshot(
+            screenshot_name,
+            conversation_id=conversation_id,
+            preferred_url_pattern="gemini.google.com",
+        )
+        dom = self.inspect_dom(preferred_url_pattern="gemini.google.com")
         live_url = str(dom.get("url") or target_url)
+        self.set_session_url("gemini", live_url)
         status = "succeeded" if final_text else "failed"
         rec = self.store.record_browser_task(
             conversation_id=conversation_id,
@@ -1228,15 +1670,14 @@ class BrowserController:
     ) -> dict[str, Any]:
         """Submit a specialist task on https://manus.im/app in the managed Chrome browser, optionally attaching a file, and read the response."""
         self._require_not_in_takeover()
-        target_url = conversation_url or "https://manus.im/app"
+        saved_url = self.get_session_url("manus")
+        target_url = (
+            conversation_url
+            if self._is_specific_session_url("manus", str(conversation_url or ""))
+            else (saved_url or "https://manus.im/app")
+        )
+        self.open_url(target_url, conversation_id=conversation_id, wait_seconds=12.0)
         target = self._get_or_create_page_target(preferred_url_pattern="manus.im")
-        current_url = str(target.get("url") or "")
-        if not current_url.startswith("https://manus.im") or (
-            conversation_url and current_url != conversation_url
-        ):
-            self.open_url(target_url, conversation_id=conversation_id, wait_seconds=12.0)
-            time.sleep(3.0)
-            target = self._get_or_create_page_target(preferred_url_pattern="manus.im")
 
         attached_file_str = None
         file_attached = False
@@ -1247,7 +1688,7 @@ class BrowserController:
         ws_url = str(target["webSocketDebuggerUrl"])
         escaped_prompt = json.dumps(prompt)
 
-        with CdpWebSocketClient(ws_url) as ws:
+        with CdpWebSocketClient(ws_url, timeout_seconds=420.0) as ws:
             ws.call("Runtime.enable")
             ws.call("Page.enable")
             ws.call("Page.bringToFront")
@@ -1478,9 +1919,14 @@ class BrowserController:
                     final_text = str(p_data["extracted"]).strip()
                     break
 
-        shot = self.capture_screenshot(screenshot_name, conversation_id=conversation_id)
-        dom = self.inspect_dom()
+        shot = self.capture_screenshot(
+            screenshot_name,
+            conversation_id=conversation_id,
+            preferred_url_pattern="manus.im",
+        )
+        dom = self.inspect_dom(preferred_url_pattern="manus.im")
         live_url = str(dom.get("url") or target_url)
+        self.set_session_url("manus", live_url)
         status = (
             "awaiting_owner_login"
             if login_gate_detected

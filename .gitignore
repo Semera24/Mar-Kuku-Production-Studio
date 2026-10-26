@@ -39,6 +39,7 @@ scratch/
 credentials.json
 client_secret*.json
 
-# macOS
+# macOS and IDE
 .DS_Store
+.vscode/
 

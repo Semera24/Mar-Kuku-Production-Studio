@@ -93,7 +93,11 @@ class MemoryManager:
         self.global_memory_dir = Path.home() / ".studio"
 
         self.workspace_memory_dir.mkdir(parents=True, exist_ok=True)
-        self.global_memory_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            self.global_memory_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            self.global_memory_dir = self.workspace_root / "scratch" / "global-skills"
+            self.global_memory_dir.mkdir(parents=True, exist_ok=True)
 
     def get_user_profile(self) -> str:
         """Load operator preferences from global ~/.studio/user.md or workspace data/memory/user.md."""
@@ -129,7 +133,11 @@ class SkillRegistry:
         self.global_skills_dir = Path.home() / ".studio" / "skills" / "niches"
 
         self.workspace_skills_dir.mkdir(parents=True, exist_ok=True)
-        self.global_skills_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            self.global_skills_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            self.global_skills_dir = self.workspace_root / "scratch" / "global-skills" / "niches"
+            self.global_skills_dir.mkdir(parents=True, exist_ok=True)
 
         self._active_skill_name: str = "mar-kuku-kids"
         self.memory = MemoryManager(self.workspace_root)

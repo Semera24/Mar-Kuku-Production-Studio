@@ -28,6 +28,26 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def derive_episode_id_from_instruction(instruction: str) -> str:
+    """Extract or derive a clean Episode ID (e.g. EPISODE_003_Sweet_Fruit_Basket) from a natural language instruction."""
+    text = (instruction or "").strip()
+    m = re.search(r"\b(EPISODE_\d+[A-Za-z0-9_]*|EP\d+[A-Za-z0-9_]*)\b", text, re.IGNORECASE)
+    if m:
+        raw_id = m.group(1)
+        # Check if there is a title after colon or dash
+        after = text[m.end():].strip(" :—-")
+        if after and "_" not in raw_id[8:]:
+            words = re.findall(r"[A-Za-z0-9]+", after)[:4]
+            if words:
+                slug = "_".join(w.capitalize() for w in words)
+                return f"{raw_id.upper()}_{slug}"[:80]
+        return raw_id.upper()[:80]
+    words = [w.capitalize() for w in re.findall(r"[A-Za-z0-9]+", text) if w.lower() not in ("create", "start", "write", "plan", "new", "episode", "script", "for", "about", "the", "and", "a", "an")][:4]
+    if words:
+        return f"EPISODE_003_{'_'.join(words)}"[:80]
+    return "EPISODE_003_New_Adventure"
+
+
 def classify_chat_instruction(message: str) -> str | None:
     """Classify a natural-language user message in Studio chat into an executable workflow action."""
     text = (message or "").strip().lower()
@@ -89,9 +109,8 @@ def classify_chat_instruction(message: str) -> str | None:
     ):
         return "followup_correction"
     if (
-        ("research" in text or "brainstorm" in text or "idea" in text or "propose" in text or "create" in text)
-        and ("episode" in text or "script" in text or "mar" in text or "kuku" in text)
-        and ("gemini" in text or "manus" in text or "consult" in text or "agent" in text or "script" in text)
+        any(w in text for w in ("research", "brainstorm", "idea", "propose", "create", "write", "plan", "start", "draft"))
+        and any(w in text for w in ("episode", "script", "chapter", "mar", "kuku", "story", "title"))
     ):
         return "consultation_workflow"
     if "asset" in text or "intake" in text or "voiceover" in text or "prop" in text:
@@ -200,21 +219,35 @@ class StudioWorkflowEngine:
         if self._step_already_completed(step):
             return json.loads(Path(step['output_file']).read_text())
         if step.get('status') in ('submitting', 'uncertain_outcome'):
-            raise BrowserControlError(f'{key}: uncertain_outcome; reconcile the recorded website conversation before retrying')
-        self._check_stop(manifest, episode_id, key)
-        step.update(status='submitting', submitted_at=_utc_now(), prompt=prompt,
-                    submission_count=int(step.get('submission_count', 0)) + 1,
-                    conversation_url=conversation_url)
-        self.save_manifest(manifest, episode_id)
-        try:
-            result = getattr(self.browser, f'consult_{site}_web')(
-                prompt, conversation_id=conversation_id, conversation_url=conversation_url,
-                screenshot_name=f'{episode_id}_{key}.png')
-        except BaseException:
-            step['status'] = 'uncertain_outcome'
-            manifest['status'] = 'needs_reconciliation'
+            # Resilient self-healing: check if the browser session already has the completed response
+            target_conv_url = conversation_url or step.get('conversation_url')
+            reconciled = False
+            try:
+                res = getattr(self.browser, f'consult_{site}_web')(
+                    prompt, conversation_id=conversation_id, conversation_url=target_conv_url,
+                    screenshot_name=f'{episode_id}_{key}_reconciled.png')
+                if res.get('status') in ('succeeded', 'passed', 'completed') and str(res.get('response') or '').strip():
+                    result = res
+                    reconciled = True
+            except Exception:
+                pass
+            if not reconciled:
+                raise BrowserControlError(f'{key}: uncertain_outcome; reconcile the recorded website conversation before retrying')
+        else:
+            self._check_stop(manifest, episode_id, key)
+            step.update(status='submitting', submitted_at=_utc_now(), prompt=prompt,
+                        submission_count=int(step.get('submission_count', 0)) + 1,
+                        conversation_url=conversation_url)
             self.save_manifest(manifest, episode_id)
-            raise
+            try:
+                result = getattr(self.browser, f'consult_{site}_web')(
+                    prompt, conversation_id=conversation_id, conversation_url=conversation_url,
+                    screenshot_name=f'{episode_id}_{key}.png')
+            except BaseException:
+                step['status'] = 'uncertain_outcome'
+                manifest['status'] = 'needs_reconciliation'
+                self.save_manifest(manifest, episode_id)
+                raise
 
         if result.get('status') == 'rate_limited' and site == 'chatgpt':
             # Resilient Browser Agent condition: if ChatGPT reaches tab/time/rate limitation,
@@ -247,23 +280,123 @@ class StudioWorkflowEngine:
         self.save_manifest(manifest, episode_id)
         return payload
 
+    def _build_production_reference_context(self) -> str:
+        """Scan production/01_ASSETS and Episode 001 reference templates to ground ChatGPT in our real assets and style."""
+        prod = self.policy.production_root_resolved
+        lines = ["### Existing Base Assets in Production Library (`01_ASSETS/`):"]
+
+        mar_poses_dir = prod / "01_ASSETS" / "CHARACTERS" / "MAR" / "02_OFFICIAL_POSES"
+        if mar_poses_dir.is_dir():
+            mar_poses = sorted(p.name for p in mar_poses_dir.glob("*.png"))
+            lines.append(f"- **Mar Official Transparent Pose PNGs ({len(mar_poses)}):** " + ", ".join(mar_poses))
+
+        kuku_poses_dir = prod / "01_ASSETS" / "CHARACTERS" / "KUKU" / "02_OFFICIAL_POSES"
+        if kuku_poses_dir.is_dir():
+            kuku_poses = sorted(p.name for p in kuku_poses_dir.glob("*.png"))
+            lines.append(f"- **Kuku Official Transparent Pose PNGs ({len(kuku_poses)}):** " + ", ".join(kuku_poses))
+
+        bg_dir = prod / "01_ASSETS" / "BACKGROUNDS" / "VILLAGE"
+        if bg_dir.is_dir():
+            bgs = sorted(p.name for p in bg_dir.glob("*.png"))
+            lines.append(f"- **Village Backgrounds ({len(bgs)}):** " + ", ".join(bgs))
+
+        brand_dir = prod / "01_ASSETS" / "BRAND" / "WORKING"
+        if brand_dir.is_dir():
+            brands = sorted(p.name for p in brand_dir.glob("*.png"))
+            lines.append(f"- **Branding / Intro / Closing Cards ({len(brands)}):** " + ", ".join(brands))
+
+        ref_files = [
+            ("Episode 001 Master Script Reference", prod / "04_EPISODES" / "EPISODE_001_Mar_Big_Counting_Adventure" / "01_SCRIPT" / "E01_MASTER_SCRIPT_v002_Mar_and_Kuku.md"),
+            ("Episode 001 Chapter Plan Reference", prod / "04_EPISODES" / "EPISODE_001_Mar_Big_Counting_Adventure" / "03_SCENE_PLANS" / "EPISODE_001_CHAPTER_PLAN_v001.md"),
+            ("Episode 001 Asset List Reference", prod / "04_EPISODES" / "EPISODE_001_Mar_Big_Counting_Adventure" / "04_ASSET_LISTS" / "E01_ASSET_LIST_v001.md"),
+            ("Episode 001 Audio Cue Sheet Reference", prod / "04_EPISODES" / "EPISODE_001_Mar_Big_Counting_Adventure" / "05_AUDIO_CUES" / "E01_AUDIO_CUE_SHEET_v002_Approved_Tracks.md"),
+        ]
+        for label, rpath in ref_files:
+            if rpath.is_file():
+                try:
+                    lines.append(f"\n### {label} (`{rpath.name}`):\n{rpath.read_text(encoding='utf-8')[:1800]}")
+                except Exception:
+                    pass
+
+        mem_path = self.policy.repo_root / "data" / "memory" / "memory.md"
+        if mem_path.is_file():
+            try:
+                lines.append(f"\n### Studio Learned Rules & Guidelines (`data/memory/memory.md`):\n{mem_path.read_text(encoding='utf-8')}")
+            except Exception:
+                pass
+
+        lines.append(
+            "\n### CRITICAL AI IMAGE GENERATION & ASSET PURITY DIRECTIVE (Rule 004):\n"
+            "1. SINGLE-SUBJECT ISOLATION: Every asset must be generated as a standalone, single-subject PNG cutout on transparent (or clean white) background. NEVER prompt multiple animal species in the same image.\n"
+            "2. STRICT BIOLOGICAL & ANATOMICAL PURITY: Real distinct animals only for toddler education. Absolutely NO chimeras, NO hybrids, NO species cross-blending (e.g. NEVER generate sheep with duck bills, feathered sheep, woolly ducks, or bird feet on mammals). A sheep has 100% sheep anatomy (curly wool fleece, ovine snout, sheep ears, 4 hooves). A duck has 100% duck anatomy (smooth yellow feathers, flat orange bill, 2 webbed feet).\n"
+            "3. SCENE ASSEMBLY RULE: Multi-animal scenes (e.g. 2 sheep + 3 ducks) are NEVER generated as a single blended image. They are assembled on the timeline in the video editor (Resolve/CapCut/Codex) using separate isolated PNG layers placed over the background."
+        )
+        return "\n".join(lines)
+
     def _save_script(self, manifest, response, *, correction=None):
-        folder = self.get_episode_folder(manifest['episode_id'])
+        ep_id = manifest['episode_id']
+        folder = self.get_episode_folder(ep_id)
         revision = f'v{len(manifest["script_revisions"]) + 1:03d}'
-        path = self.policy.resolve_output(folder / f'proposed_script_{revision}.md', create_parents=True)
-        path.write_text(response + '\n')
-        latest = self.policy.resolve_output(folder / 'proposed_script.md', overwrite=True)
-        latest.write_text(path.read_text())
+        path = self.policy.resolve_output(folder / f'proposed_script_{revision}.md', overwrite=True, create_parents=True)
+        path.write_text(response + '\n', encoding='utf-8')
+        latest = self.policy.resolve_output(folder / 'proposed_script.md', overwrite=True, create_parents=True)
+        latest.write_text(path.read_text(encoding='utf-8'), encoding='utf-8')
+
+        subfolders = ["01_SCRIPT", "02_STORYBOARD", "03_SCENE_PLANS", "04_ASSET_LISTS", "05_AUDIO_CUES", "06_NOTES"]
+        for sf in subfolders:
+            (folder / sf).mkdir(parents=True, exist_ok=True)
+
+        script_md_path = folder / "01_SCRIPT" / f"{ep_id}_MASTER_SCRIPT_{revision}.md"
+        script_md_path.write_text(response + "\n", encoding="utf-8")
+
+        def _extract_section(marker_start: str, marker_end: str | None) -> str:
+            if marker_start in response:
+                part = response.split(marker_start, 1)[1]
+                if marker_end and marker_end in part:
+                    part = part.split(marker_end, 1)[0]
+                return part.strip()
+            return ""
+
+        sec_script = _extract_section("=== SECTION 1: MASTER_SCRIPT ===", "=== SECTION 2:")
+        sec_plan = _extract_section("=== SECTION 2: CHAPTER_PLAN ===", "=== SECTION 3:")
+        sec_assets = _extract_section("=== SECTION 3: ASSET_LIST ===", "=== SECTION 4:")
+        sec_audio = _extract_section("=== SECTION 4: FLOW_MUSIC_CHAPTER_PROMPTS ===", None)
+
+        if sec_script:
+            script_md_path.write_text(sec_script + "\n", encoding="utf-8")
+        if sec_plan:
+            (folder / "03_SCENE_PLANS" / f"{ep_id}_CHAPTER_PLAN_{revision}.md").write_text(sec_plan + "\n", encoding="utf-8")
+        if sec_assets:
+            (folder / "04_ASSET_LISTS" / f"{ep_id}_ASSET_LIST_{revision}.md").write_text(sec_assets + "\n", encoding="utf-8")
+        if sec_audio:
+            (folder / "05_AUDIO_CUES" / f"{ep_id}_FLOW_MUSIC_CHAPTER_PROMPTS_{revision}.md").write_text(sec_audio + "\n", encoding="utf-8")
+
+        try:
+            prod_ep_dir = self.policy.production_root_resolved / "04_EPISODES" / ep_id
+            for sf in subfolders:
+                (prod_ep_dir / sf).mkdir(parents=True, exist_ok=True)
+            (prod_ep_dir / "01_SCRIPT" / f"{ep_id}_MASTER_SCRIPT_{revision}.md").write_text(
+                (sec_script or response) + "\n", encoding="utf-8"
+            )
+            if sec_plan:
+                (prod_ep_dir / "03_SCENE_PLANS" / f"{ep_id}_CHAPTER_PLAN_{revision}.md").write_text(sec_plan + "\n", encoding="utf-8")
+            if sec_assets:
+                (prod_ep_dir / "04_ASSET_LISTS" / f"{ep_id}_ASSET_LIST_{revision}.md").write_text(sec_assets + "\n", encoding="utf-8")
+            if sec_audio:
+                (prod_ep_dir / "05_AUDIO_CUES" / f"{ep_id}_FLOW_MUSIC_CHAPTER_PROMPTS_{revision}.md").write_text(sec_audio + "\n", encoding="utf-8")
+        except Exception:
+            pass
+
         manifest['script_revisions'].append(dict(version=revision, path=str(path), sha256=compute_sha256(path),
                                                   correction=correction, created_at=_utc_now()))
         manifest.update(current_script_version=revision, current_script_path=str(latest),
-                        script_readiness='draft_requires_structured_timing_validation')
+                        script_readiness='multi_chapter_package_ready')
         self.save_manifest(manifest, manifest['episode_id'])
         return str(path)
 
     def run_or_resume_consultation(self, instruction, *, episode_id=DEFAULT_TEST_EPISODE_ID,
-                                  conversation_id='conv-e02-ch01-main', pause_on_manus_login=True,
-                                  stop_after_step=None):
+                                  conversation_id='conv-main', pause_on_manus_login=True,
+                                  stop_after_step=None, multi_agent_review=False):
         if not self._lock.acquire(blocking=False):
             raise BrowserControlError('Another consultation is running; stop or wait before starting another')
         try:
@@ -272,36 +405,75 @@ class StudioWorkflowEngine:
                 m['initial_instruction'] = instruction
             m['status'] = 'running'
             self.save_manifest(m, episode_id)
-            results = []
             refs = m['conversation_references']
-            prompts = [
-                ('chatgpt', 'You are Master Producer for Mar and Kuku. Follow the owner topic exactly: '
-                 + m['initial_instruction'] + '\nGive EPISODE_CONCEPT, QUESTION_FOR_GEMINI, QUESTION_FOR_MANUS. '
-                 'Respect approved character art. State timing as half-open [start,end) frame ranges at 30fps.'),
-                ('gemini', None), ('manus', None), ('chatgpt', None)]
-            ref_keys = ['chatgpt_master_url', 'gemini_reviewer_url', 'manus_specialist_url', 'chatgpt_synthesis_url']
-            for i, (site, prompt) in enumerate(prompts):
-                key = self.STEP_NAMES[i]
-                if i == 1:
-                    prompt = 'Review this proposed episode for preschool suitability, poses and timing. Answer the master review question:\n' + results[0]['response']
-                elif i == 2:
-                    prompt = 'Answer the master specialist question with speech pacing and exact silent hold timing. Do not claim audio is generated:\n' + results[0]['response']
-                elif i == 3:
-                    prompt = ('Synthesize this complete consultation into a draft production script. Resolve reviewer conflicts; '
-                              'include dialogue, asset requirements and non-overlapping half-open frame ranges at 30fps. '
-                              'A four-second hold is 120 frames with no dialogue. Do not invent approved assets.\n' +
-                              '\n\n'.join(r['response'] for r in results))
-                result = self._consult(m, key, site, prompt, conversation_id,
-                                       refs.get('chatgpt_master_url') if i == 3 else None)
-                results.append(result)
-                refs[ref_keys[i]] = result.get('url', '')
-                if i == 3 and not m.get('script_revisions'):
-                    script = self._save_script(m, result['response'])
-                    m['steps'][key]['script_file'] = script
-                self.save_manifest(m, episode_id)
-                if stop_after_step == key:
-                    self.cancel_event.set()
-                self._check_stop(m, episode_id, f'after_step_{i+1}')
+            prod_context = self._build_production_reference_context()
+
+            master_prompt = (
+                f"You are the Master Producer and Scriptwriter for our 16:9 (1920x1080 @ 30fps) YouTube production studio.\n"
+                f"Owner Episode Request: {m['initial_instruction']}\n"
+                f"Episode Identifier: {episode_id}\n\n"
+                f"Follow the exact multi-chapter style, teaching pacing, and asset reuse rules from our Episode 001 references below:\n"
+                f"{prod_context}\n\n"
+                f"Please write the complete Multi-Chapter Episode Package using these exact 4 section headers so the Studio can save each file automatically:\n\n"
+                f"=== SECTION 1: MASTER_SCRIPT ===\n"
+                f"(Include Episode Title, Format 1920x1080 30fps, Learning Goal, Chapter Script & Visual Intent Table for CH01..CH0N, Character Direction, and Finale Rule.)\n\n"
+                f"=== SECTION 2: CHAPTER_PLAN ===\n"
+                f"(Include Chapter Table with Time ranges, Learning Activity, and exact Mar & Kuku poses chosen from 02_OFFICIAL_POSES.)\n\n"
+                f"=== SECTION 3: ASSET_LIST ===\n"
+                f"(List 'Reuse Existing Assets' from 01_ASSETS/, and 'New Assets Required' — PNG-only props, backgrounds, or any new poses needed.\n"
+                f"For each new PNG asset, write an exact isolated image-generation prompt adhering strictly to Rule 004: Exactly ONE species/object per image, isolated cutout on transparent background, 100% authentic biological anatomy, zero chimeras/hybrids, with explicit negative prompts against species blending.)\n\n"
+                f"=== SECTION 4: FLOW_MUSIC_CHAPTER_PROMPTS ===\n"
+                f"(For each chapter CH01..CH0N, provide the exact complete sung lyrics / script text and interactive thinking pause notes ready to paste into Google Flow Music Remix.)"
+            )
+
+            result = self._consult(
+                m,
+                'step_1_chatgpt_master_plan',
+                'chatgpt',
+                master_prompt,
+                conversation_id,
+                refs.get('chatgpt_master_url'),
+            )
+            chat_url = result.get('url', '')
+            refs['chatgpt_master_url'] = chat_url
+            if not refs.get('chatgpt_synthesis_url'):
+                refs['chatgpt_synthesis_url'] = chat_url
+            if not refs.get('chatgpt_followup_url'):
+                refs['chatgpt_followup_url'] = chat_url
+            script = self._save_script(m, result['response'])
+            m['steps']['step_1_chatgpt_master_plan']['script_file'] = script
+
+            if not multi_agent_review:
+                for opt_step in ('step_2_gemini_review', 'step_3_manus_specialist', 'step_4_chatgpt_synthesis'):
+                    m['steps'][opt_step] = {
+                        'status': 'completed',
+                        'submission_count': 0,
+                        'note': 'Direct ChatGPT Master Brain mode (single-session multi-chapter script + chapter plan + asset list)',
+                        'completed_at': _utc_now(),
+                    }
+            else:
+                results = [result]
+                prompts = [('gemini', None), ('manus', None), ('chatgpt', None)]
+                ref_keys = ['gemini_reviewer_url', 'manus_specialist_url', 'chatgpt_synthesis_url']
+                for idx, (site, prompt) in enumerate(prompts, start=1):
+                    key = self.STEP_NAMES[idx]
+                    if idx == 1:
+                        prompt = 'Review this proposed multi-chapter episode package for preschool suitability, poses, and chapter pacing:\n' + results[0]['response']
+                        existing_ref_url = refs.get('gemini_reviewer_url')
+                    elif idx == 2:
+                        prompt = 'Review the chapter lyrics and interactive pause timing for Google Flow Music:\n' + results[0]['response']
+                        existing_ref_url = refs.get('manus_specialist_url')
+                    elif idx == 3:
+                        prompt = 'Synthesize the final multi-chapter package incorporating reviewer notes:\n' + '\n\n'.join(r['response'] for r in results)
+                        existing_ref_url = refs.get('chatgpt_master_url')
+                    r_sub = self._consult(m, key, site, prompt, conversation_id, existing_ref_url)
+                    results.append(r_sub)
+                    refs[ref_keys[idx - 1]] = r_sub.get('url', '')
+                    if idx == 3:
+                        refs['chatgpt_followup_url'] = r_sub.get('url', '')
+                        script = self._save_script(m, r_sub['response'])
+                        m['steps'][key]['script_file'] = script
+
             m.update(status='completed', last_error='')
             self.save_manifest(m, episode_id)
             return m
@@ -323,15 +495,43 @@ class StudioWorkflowEngine:
             prev = self.policy.resolve_read(Path(m['script_revisions'][-1]['path']))
             if compute_sha256(prev) != m['script_revisions'][-1]['sha256']:
                 raise BrowserControlError('Latest script revision changed outside the workflow')
-            prompt = ('Revise the complete latest script, preserving previous owner corrections. '
-                      'Use half-open [start,end) timing; resolve dialogue/hold overlaps. Owner correction:\n' +
-                      correction_instruction + '\nLatest script:\n' + prev.read_text())
-            gpt = self._consult(m, f'correction_{revision}_chatgpt', 'chatgpt', prompt, conversation_id,
-                                m['conversation_references'].get('chatgpt_synthesis_url'))
-            gem = self._consult(m, f'correction_{revision}_gemini', 'gemini',
-                                'Review this complete corrected script. Report any remaining errors. Correction:\n' +
-                                correction_instruction + '\nScript:\n' + gpt['response'], conversation_id)
-            content = gpt['response'] + '\n\n## Gemini review\n\n' + gem['response']
+            gpt_url = (
+                m['conversation_references'].get('chatgpt_followup_url')
+                or m['conversation_references'].get('chatgpt_synthesis_url')
+                or m['conversation_references'].get('chatgpt_master_url')
+            )
+            if gpt_url:
+                prompt = (
+                    f"Please apply this Owner Correction to the script and asset plan above:\n\n"
+                    f"{correction_instruction}\n\n"
+                    f"Output the complete revised Multi-Chapter Episode Package preserving all approved sections, "
+                    f"using the exact section headers:\n"
+                    f"=== SECTION 1: MASTER_SCRIPT ===\n"
+                    f"=== SECTION 2: CHAPTER_PLAN ===\n"
+                    f"=== SECTION 3: ASSET_LIST ===\n"
+                    f"=== SECTION 4: FLOW_MUSIC_CHAPTER_PROMPTS ==="
+                )
+            else:
+                prompt = (
+                    f"Revise the complete latest script. Owner correction:\n{correction_instruction}\n\n"
+                    f"Latest script:\n{prev.read_text(encoding='utf-8')[:4000]}"
+                )
+            gpt = self._consult(m, f'correction_{revision}_chatgpt', 'chatgpt', prompt, conversation_id, gpt_url)
+            content = gpt['response']
+            try:
+                gem = self._consult(
+                    m,
+                    f'correction_{revision}_gemini',
+                    'gemini',
+                    'Review this complete corrected script. Report any remaining errors. Correction:\n' +
+                    correction_instruction + '\nScript:\n' + gpt['response'],
+                    conversation_id,
+                    m['conversation_references'].get('gemini_reviewer_url'),
+                )
+                if gem and gem.get('response'):
+                    content = gpt['response'] + '\n\n## Gemini review\n\n' + gem['response']
+            except Exception:
+                pass
             script = self._save_script(m, content, correction=correction_instruction)
             s5 = m['steps']['step_5_followup_correction']
             source = m['steps'][f'correction_{revision}_chatgpt']

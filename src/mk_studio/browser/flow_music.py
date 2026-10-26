@@ -40,7 +40,7 @@ class GoogleFlowMusicAdapter:
         if not url.startswith(self.FLOW_BASE_URL):
             self.browser.open_url(self.FLOW_BASE_URL, wait_seconds=6.0)
             time.sleep(2.0)
-        dom = self.browser.inspect_dom()
+        dom = self.browser.inspect_dom(preferred_url_pattern="flowmusic.app")
 
         body_text = str(dom.get("bodyTextExcerpt") or "")
         buttons = [str(b.get("text") or "") for b in dom.get("buttons") or []]
@@ -59,15 +59,18 @@ class GoogleFlowMusicAdapter:
         }
 
     def open_reference_session(self, session_url: str | None = None) -> dict[str, Any]:
-        """Open the approved reference session (defaults to Five Flowers Remix)."""
-        target_url = session_url or self.APPROVED_FIVE_FLOWERS_SESSION_URL
+        """Open the approved reference session (defaults to Five Flowers Remix or saved project session)."""
+        saved_flow = self.browser.get_session_url("flowmusic")
+        target_url = session_url or saved_flow or self.APPROVED_FIVE_FLOWERS_SESSION_URL
         self.browser.open_url(target_url, wait_seconds=6.0)
-        time.sleep(2.0)
-        dom = self.browser.inspect_dom()
-        shot = self.browser.capture_screenshot("flowmusic_session_opened.png")
+        time.sleep(1.5)
+        dom = self.browser.inspect_dom(preferred_url_pattern="flowmusic.app")
+        live_url = str(dom.get("url") or target_url)
+        self.browser.set_session_url("flowmusic", live_url)
+        shot = self.browser.capture_screenshot("flowmusic_session_opened.png", preferred_url_pattern="flowmusic.app")
 
         return {
-            "session_url": target_url,
+            "session_url": live_url,
             "title": str(dom.get("title") or ""),
             "screenshot": shot["path"],
             "has_five_flowers": "Five Flowers" in str(dom.get("bodyTextExcerpt") or ""),

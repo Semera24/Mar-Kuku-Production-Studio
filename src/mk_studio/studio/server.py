@@ -21,6 +21,7 @@ from mk_studio.media import CH01_PINNED_INPUTS
 from mk_studio.config import RootPolicy
 from mk_studio.editors.capcut import CapCutAdapter
 from mk_studio.editors.palmier import PalmierAdapter
+from mk_studio.editors.resolve import ResolveAdapter
 from mk_studio.mac.controller import MacController
 from mk_studio.providers.registry import ProviderError, ProviderRegistry
 from mk_studio.os_compat import focus_application, get_platform_name, is_linux, is_macos, open_file_or_folder
@@ -34,6 +35,7 @@ from mk_studio.studio.workflow import (
     StudioWorkflowEngine,
     WorkflowStoppedError,
     classify_chat_instruction,
+    derive_episode_id_from_instruction,
 )
 
 
@@ -78,6 +80,7 @@ class StudioOrchestrator:
         self.skills = SkillRegistry(Path(__file__).resolve().parents[3])
         self.scheduler = StudioScheduler()
         self.capcut = CapCutAdapter(self.policy)
+        self.resolve = ResolveAdapter(self.policy)
         self.telegram = TelegramService()
         self.telegram.start_polling(self)
         self._ensure_default_conversation()
@@ -103,47 +106,36 @@ class StudioOrchestrator:
         convs = self.store.list_conversations()
         if convs:
             return convs[0]
-        proj_path = str(
-            self.policy.output_root_resolved / "E02_CH01_Technical_Proof_v001.palmier"
-        )
         return self.store.create_conversation(
-            conversation_id="conv-e02-ch01-main",
-            title="Episode 002 / CH01 — Welcome to the Color Garden",
-            active_episode_id="EPISODE_002",
-            active_chapter_id="CH01",
-            active_project_path=proj_path,
+            conversation_id="conv-main",
+            title="Universal AI Production Studio",
+            active_episode_id="",
+            active_chapter_id="",
+            active_project_path="",
             active_browser_session_id="default-chrome-cdp",
             active_mac_profile="editor_automation",
-            active_provider_id="codex_cli",
+            active_provider_id="chatgpt_web",
         )
 
     def build_context_summary(self, conversation_id: str) -> str:
-        """Build a deterministic context summary including active episode/chapter/project, recent messages, and workflow state."""
+        """Build a deterministic context summary including active niche, workspace roots, recent messages, and workflow state."""
         conv = self.store.get_conversation(conversation_id) or self._ensure_default_conversation()
         history = self.store.list_messages(conversation_id)[-8:]
-        plan_path = self.policy.output_root_resolved / "timeline-plan.json"
-        mp4_path = self.policy.output_root_resolved / "E02_CH01_Technical_Proof_1080p30_v001.mp4"
-        cand_rel = CH01_PINNED_INPUTS["ch01_candidate_wav"]["path"]
-        cand_wav = self.policy.production_root_resolved / cand_rel
-        wf_manifest = self.workflow.load_manifest(DEFAULT_TEST_EPISODE_ID)
+        ep_id = conv.get("active_episode_id") or ""
+        wf_manifest = self.workflow.load_manifest(ep_id) if ep_id else {}
+        active_skill = self.skills.get_active_skill()
 
         lines = [
             f"- Conversation ID: {conv['conversation_id']} ({conv['title']})",
-            f"- Active Episode / Chapter: {conv['active_episode_id']} / {conv['active_chapter_id']}",
-            f"- Active Scratch Palmier Project: {conv['active_project_path']}",
-            f"- Candidate Audio ('the candidate audio'): {cand_wav} (exists={cand_wav.is_file()}, 30.220000s, 1,450,560 samples @ 48kHz, stream 0:a:0)",
-            "- Response Hold Window ('the 4-second pause'): frames 501..621 (16.70s..20.70s, 4.00s stillness hold)",
-            f"- Scratch Output Root ('export to scratch'): {self.policy.output_root_resolved}",
-            f"- Compiled Timeline Plan: {plan_path} (exists={plan_path.is_file()})",
-            f"- Exported 1080p30 MP4: {mp4_path} (exists={mp4_path.is_file()}, video=30.233333s / 907f, audio=30.200000s)",
-            f"- Active 3-Agent Workflow ({DEFAULT_TEST_EPISODE_ID}): status={wf_manifest.get('status')}, script_version={wf_manifest.get('current_script_version')}, script_path={wf_manifest.get('current_script_path')}",
-            f"- Active Browser Session: {conv['active_browser_session_id']} (takeover={self.browser.owner_takeover})",
-            f"- Active Mac Profile: {conv['active_mac_profile']}",
-            f"- Active AI Provider: {conv['active_provider_id']}",
+            f"- Active Production Workspace Root: {self.policy.production_root_resolved}",
+            f"- Scratch Working Root: {self.policy.output_root_resolved}",
+            f"- Active Episode / Chapter: {ep_id or 'None (Ready for new episode)'} / {conv.get('active_chapter_id') or 'All Chapters'}",
+            f"- Active Workflow Status: {wf_manifest.get('status', 'idle')}",
+            f"- Active Live Browser Session: {conv['active_browser_session_id']} (CDP Port {self.browser.cdp_port}, takeover={self.browser.owner_takeover})",
+            f"- Active Brain Provider: {conv['active_provider_id']}",
+            f"- Active Niche Blueprint (Hermes Skill): {active_skill.title} (ID: {active_skill.name}, Format: {active_skill.format})",
+            f"- Niche Blueprint Instructions Excerpt: {active_skill.instructions_md[:320].replace(chr(10), ' ')}",
         ]
-        active_skill = self.skills.get_active_skill()
-        lines.append(f"- Active Niche Blueprint (Hermes Skill): {active_skill.title} (ID: {active_skill.name}, Format: {active_skill.format})")
-        lines.append(f"- Niche Blueprint Excerpt: {active_skill.instructions_md[:260].replace(chr(10), ' ')}")
         if history:
             lines.append("\nRecent Conversation Turns:")
             for m in history:
@@ -240,7 +232,7 @@ class StudioOrchestrator:
             self.reset_stop()
 
         if inferred_action == 'consult_three_agents':
-            ep_id = str(params.get('episode_id') or ('EP_' + hashlib.sha256(user_message.encode()).hexdigest()[:12]))
+            ep_id = str(params.get('episode_id') or derive_episode_id_from_instruction(user_message))
             self.store.update_conversation_context(conversation_id, active_episode_id=ep_id)
         else:
             ep_id = str(params.get('episode_id') or conv.get('active_episode_id') or DEFAULT_TEST_EPISODE_ID)
@@ -311,28 +303,30 @@ class StudioOrchestrator:
                 )
 
             elif inferred_action in ("consult_three_agents", "resume_workflow"):
+                multi_review = any(w in user_message.lower() for w in ("gemini", "manus", "3-agent", "three agent"))
                 manifest = self.workflow.run_or_resume_consultation(
                     user_message,
                     episode_id=ep_id,
                     conversation_id=conversation_id,
                     stop_after_step=params.get("stop_after_step"),
                     pause_on_manus_login=bool(params.get("pause_on_manus_login", True)),
+                    multi_agent_review=multi_review,
                 )
                 result_payload = manifest
                 refs = manifest.get("conversation_references") or {}
                 steps = manifest.get("steps") or {}
                 s1 = steps.get("step_1_chatgpt_master_plan") or {}
-                s2 = steps.get("step_2_gemini_review") or {}
-                s3 = steps.get("step_3_manus_specialist") or {}
-                s4 = steps.get("step_4_chatgpt_synthesis") or {}
                 reply_text = (
-                    f"Completed 3-Agent Consultation Workflow (`{manifest['episode_id']}`, status=`{manifest['status']}`).\n"
-                    f"- **Master Producer (ChatGPT Web):** `{refs.get('chatgpt_master_url')}` (submissions=`{s1.get('submission_count')}`)\n"
-                    f"- **Reviewer (Google Gemini Web):** `{refs.get('gemini_reviewer_url')}` (submissions=`{s2.get('submission_count')}`)\n"
-                    f"- **Specialist (Manus Web):** `{refs.get('manus_specialist_url')}` (status=`{s3.get('status')}`, submissions=`{s3.get('submission_count')}`)\n"
-                    f"- **Synthesis (ChatGPT Web):** `{refs.get('chatgpt_synthesis_url')}` (submissions=`{s4.get('submission_count')}`)\n"
-                    f"- **Saved Script (`{manifest.get('current_script_version')}`):** `{manifest.get('current_script_path')}`\n"
-                    f"- **Output Manifest:** `{self.workflow.manifest_path(ep_id)}`"
+                    f"✅ **Completed Step 1: Multi-Chapter Script, Chapter Plan & Asset List (`{manifest['episode_id']}`)**\n\n"
+                    f"- **Master Brain (ChatGPT Web):** `{refs.get('chatgpt_master_url')}` (submissions=`{s1.get('submission_count')}`)\n"
+                    f"- **Saved Master Script (`{manifest.get('current_script_version')}`):** `{manifest.get('current_script_path')}`\n"
+                    f"- **Structured Episode Package Saved in:**\n"
+                    f"  - `04_EPISODES/{ep_id}/01_SCRIPT/{ep_id}_MASTER_SCRIPT_{manifest.get('current_script_version')}.md`\n"
+                    f"  - `04_EPISODES/{ep_id}/03_SCENE_PLANS/{ep_id}_CHAPTER_PLAN_{manifest.get('current_script_version')}.md`\n"
+                    f"  - `04_EPISODES/{ep_id}/04_ASSET_LISTS/{ep_id}_ASSET_LIST_{manifest.get('current_script_version')}.md`\n"
+                    f"  - `04_EPISODES/{ep_id}/05_AUDIO_CUES/{ep_id}_FLOW_MUSIC_CHAPTER_PROMPTS_{manifest.get('current_script_version')}.md`\n\n"
+                    f"**Preview of Generated Script & Chapter Plan:**\n\n"
+                    f"{Path(manifest['current_script_path']).read_text(encoding='utf-8')[:1600] if manifest.get('current_script_path') and Path(manifest['current_script_path']).is_file() else ''}"
                 )
                 if manifest.get("current_script_path"):
                     attachments.append(
@@ -821,19 +815,15 @@ class StudioOrchestrator:
                         }
                     )
                 except Exception as exc:
-                    # Informative local Studio answer when external provider is unavailable
-                    ch02_m = self.workflow.load_manifest("EP02_CH02_AUDIO")
-                    ch02_steps = ch02_m.get("steps") or {}
+                    active_skill = self.skills.get_active_skill()
                     reply_text = (
-                        f"**Studio Status & Information (Direct Studio Answer):**\n\n"
-                        f"- **Question Received:** \"{user_message}\"\n"
-                        f"- **Action Executed:** None (Zero edits performed; questions never trigger modifications).\n"
-                        f"- **Active Chapter:** `Episode 002 / CH02 — Meet Red, Yellow and Blue`\n"
-                        f"- **Workflow Status:** `{ch02_m.get('status', 'in_progress')}`\n"
-                        f"- **Candidate Audio Identity:** Candidate A and Candidate B have identical decoded PCM audio (SHA-256: `5333d9df...`, 84.512s, 48kHz Stereo). Both represent Take 1 (Flow Music Lyria 3.5 Remix).\n"
-                        f"- **Wording Reconciliation:** Spoken words *'Have a look at this one'* vs approved script *'And look at this one'*.\n"
-                        f"- **Response Hold:** Prompt vocal finishes at 22.40s; answer begins at 29.30s (6.90s gap; 4.00s hold window is [22.40s..26.40s]).\n\n"
-                        f"*(Local Studio knowledge applied; external provider `{eff_provider}`: {exc})*"
+                        f"**Universal AI Studio — Live Browser Brain Status:**\n\n"
+                        f"- **Prompt Received:** \"{user_message}\"\n"
+                        f"- **Active Brain Provider:** `{eff_provider}`\n"
+                        f"- **Active Niche Blueprint:** `{active_skill.title}` (`{active_skill.name}`)\n"
+                        f"- **Active Production Workspace:** `{self.policy.production_root_resolved}`\n"
+                        f"- **Provider Notice:** `{exc}`\n\n"
+                        f"👉 **Tip:** Open the **🌐 Live Browser View** tab and click **🔑 Open All Login Tabs** to sign in to ChatGPT, Gemini, Manus, Flow Music, CapCut, and YouTube Studio in the persistent Chrome window."
                     )
                     result_payload = {"response": reply_text, "status": "studio_informational_response", "provider_kind": "local_studio"}
 
@@ -1142,9 +1132,9 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
 <body>
   <aside id="left-aside">
     <header>
-      <span>Mar & Kuku Studio</span>
+      <span>Universal AI Studio</span>
       <div style="display:flex;align-items:center;gap:6px;">
-        <button onclick="openThreeAgentsModal()" class="badge ok" style="cursor:pointer;border:none;background:#059669;color:#fff;font-size:11px;padding:3px 7px;" title="Click to view the 3 AI Agents">3-Agent Live ▾</button>
+        <button onclick="openThreeAgentsModal()" class="badge ok" style="cursor:pointer;border:none;background:#059669;color:#fff;font-size:11px;padding:3px 7px;" title="Click to view the Live Browser AI Brain">Live AI Brain ▾</button>
         <button onclick="toggleSidebar('left')" style="padding:2px 6px;font-size:11px;" title="Close Panel">✕</button>
       </div>
     </header>
@@ -1156,7 +1146,7 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
       <div style="display:flex;justify-content:space-between;align-items:center;width:100%;flex-wrap:wrap;gap:8px;">
         <div style="display:flex;align-items:center;gap:8px;">
           <button id="toggle-left-btn" onclick="toggleSidebar('left')" style="padding:5px 9px;font-size:12px;background:#1e293b;" title="Toggle Workflows Panel">☰ Workflows</button>
-          <span id="conv-title" style="font-weight:600;font-size:14px;color:#f8fafc;">Universal Studio Session</span>
+          <span id="conv-title" style="font-weight:600;font-size:14px;color:#f8fafc;">Universal AI Production Studio</span>
           <select id="niche-selector" onchange="switchNicheSkill(this.value)" style="background:#1e293b;border:1px solid #3b82f6;color:#60a5fa;font-weight:600;padding:4px 8px;font-size:12px;border-radius:6px;cursor:pointer;" title="Switch Active 16:9 YouTube Niche Blueprint">
           </select>
         </div>
@@ -1168,11 +1158,11 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
       </div>
       <div id="action-buttons-bar" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;width:100%;">
         <span style="font-size:11px;color:#94a3b8;font-weight:600;margin-right:2px;">PRODUCTION STEPS:</span>
-        <button onclick="triggerAction('consult_three_agents')" title="Consult ChatGPT, Gemini, and Manus to write the script">📝 1. Plan Script</button>
-        <button onclick="triggerAction('flow_music_audio_pipeline')" title="Generate acoustic toddler song in Google Flow Music">🎵 2. Make Music</button>
-        <button onclick="triggerAction('generate_assets')" title="Prepare transparent character PNGs and fruit props">🎨 3. Prepare Props</button>
-        <button onclick="triggerAction('assemble_palmier')" title="Assemble the multi-track video timeline in Palmier Pro">🎬 4. Assemble Video</button>
-        <button onclick="triggerAction('export_mp4')" title="Render native 1080p30 MP4 video and verify quality">📦 5. Export MP4</button>
+        <button onclick="triggerAction('consult_three_agents')" title="Write Full Episode Script & Chapter Breakdown in ChatGPT Web">📝 1. Script &amp; Chapters</button>
+        <button onclick="triggerAction('generate_assets')" title="Generate & Save PNG Pose / Scene Images">🎨 2. PNG Scene Images</button>
+        <button onclick="triggerAction('flow_music_audio_pipeline')" title="Chapter Music (Flow Music Remix -> Manus Timestamps -> ChatGPT Audio Trim)">🎵 3. Chapter Music Loop</button>
+        <button onclick="triggerAction('assemble_palmier')" title="Full-Episode Assembly (All Chapters + Base Poses + Intro/Logo/Subscribe/Outro)">🎬 4. Assemble Full Episode</button>
+        <button onclick="triggerAction('export_mp4')" title="Render native 1080p30 Full Episode MP4 video and verify quality">📦 5. Export Full MP4</button>
         <button onclick="triggerAction('stage_youtube')" title="Stage video package for YouTube Studio">🚀 6. YouTube Stage</button>
         <button class="primary" onclick="triggerAction('full_pipeline')" title="Run full automated sequence from script to staged video">⚡ Run Entire Episode</button>
         <span style="font-size:11px;color:#94a3b8;font-weight:600;margin:0 2px 0 6px;">CONTROLS:</span>
@@ -1184,10 +1174,6 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
         <button onclick="triggerAction('generate_lipsync')" style="background:#8b5cf6;color:#fff;" title="Run Audio-Driven 2D Character Lip-Sync & Viseme Flap">👄 2D Lip-Sync</button>
         <button onclick="triggerAction('youtube_community_review')" style="background:#0284c7;color:#fff;" title="Inspect and draft replies to latest YouTube comments">💬 Review Comments</button>
         <button onclick="triggerAction('youtube_analytics_digest')" style="background:#0f766e;color:#fff;" title="Inspect YouTube Studio performance metrics and subscriber growth">📊 Channel Analytics</button>
-        <button onclick="triggerAction('continue_ch02_audio')" title="Inspect historical Chapter 02 recordings">Review Ch02 Audio</button>
-        <button onclick="triggerAction('verify_ch01')" title="Run Chapter 01 technical verification">Verify Ch01 Proof</button>
-        <button onclick="triggerAction('mac_inspect')" title="Audit Mac desktop windows and permissions">Inspect Mac</button>
-        <button onclick="triggerAction('browser_demo')" title="Test local offline browser fixture">Offline Fixture</button>
       </div>
     </header>
     <div class="tab-nav">
@@ -1205,19 +1191,18 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
       <div class="scroll" id="chat-messages"></div>
       <div class="composer">
         <div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;color:#94a3b8;margin-bottom:2px;">
-          <span>Instruction / Prompt:</span>
+          <span>Instruction / Prompt (Routed directly to Live Browser Brain):</span>
           <button type="button" onclick="toggleComposerHeight()" id="toggle-resize-btn" style="background:transparent;border:none;color:#60a5fa;cursor:pointer;padding:0;font-size:11px;">⤢ Expand Box</button>
         </div>
-        <textarea id="chat-input" placeholder="Type e.g. 'Execute episode workflow from WorkingFlowTracker/EP03_SWEET_FRUIT_BASKET.md' or prompt..."></textarea>
+        <textarea id="chat-input" placeholder="Type your episode concept, chapter request, or workflow instruction..."></textarea>
         <div class="composer-row" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
           <select id="provider-select" style="flex:1;min-width:180px;">
-            <option value="chatgpt_web">ChatGPT Web Session (Master)</option>
-            <option value="gemini_web">Google Gemini Web Session (Reviewer)</option>
-            <option value="manus_web">Manus Web Session (Specialist)</option>
-            <option value="ollama_local">🦙 Ollama Local Qwen/Llama (100% Free Offline)</option>
-            <option value="codex_cli">OpenAI Codex CLI (Local)</option>
-            <option value="openai_api">OpenAI REST API (Keychain)</option>
-            <option value="browser_web_ai">Local Sandbox Fixture (/browser-sandbox)</option>
+            <option value="chatgpt_web" selected>👑 ChatGPT Web Session (Master Brain + PNG Gen)</option>
+            <option value="gemini_web">🔍 Google Gemini Web Session (Reviewer)</option>
+            <option value="manus_web">🎯 Manus Web Session (Timestamp Transcriber)</option>
+            <option value="ollama_local">🦙 Ollama Local Qwen/Llama (Optional Offline)</option>
+            <option value="codex_cli">OpenAI Codex CLI (Optional Local)</option>
+            <option value="openai_api">OpenAI REST API (Optional Key)</option>
           </select>
           <select id="approval-mode-select" style="min-width:170px;background:#1e3a8a;border-color:#3b82f6;color:#fff;font-weight:600;">
             <option value="ask">✋ Mode: Ask Me First</option>
@@ -1232,8 +1217,8 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
     <div id="tab-pane-tracker" class="tab-pane" style="padding:16px;">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
         <div>
-          <h3 style="margin:0;font-size:16px;color:#f8fafc;">Episode Production Tracker</h3>
-          <span style="font-size:12px;color:#94a3b8;" id="tracker-episode-label">Active: EP03_SWEET_FRUIT_BASKET</span>
+          <h3 style="margin:0;font-size:16px;color:#f8fafc;">Universal Episode Production Tracker</h3>
+          <span style="font-size:12px;color:#94a3b8;" id="tracker-episode-label">Ready for New Episode</span>
         </div>
         <button onclick="refreshState()" style="font-size:12px;">Refresh Tracker</button>
       </div>
@@ -1244,8 +1229,8 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
     <div id="tab-pane-files" class="tab-pane" style="padding:16px;">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
         <div>
-          <h3 style="margin:0;font-size:16px;color:#f8fafc;">DoroNesh Library &amp; Working Files</h3>
-          <span style="font-size:12px;color:#94a3b8;">Direct browser media players, prop previews, and Finder reveal</span>
+          <h3 style="margin:0;font-size:16px;color:#f8fafc;">Production Workspace &amp; Asset Library</h3>
+          <span style="font-size:12px;color:#94a3b8;">Direct browser media players, Base Pose PNGs, Chapter Audio, and Linux file explorer</span>
         </div>
         <button onclick="loadFilesExplorer()" style="font-size:12px;">Refresh Files</button>
       </div>
@@ -1254,23 +1239,34 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
 
     <!-- Tab 4: Live Browser View Pane -->
     <div id="tab-pane-browser" class="tab-pane" style="padding:16px;flex:1;min-height:0;display:none;flex-direction:column;">
-      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;background:var(--panel);padding:12px 16px;border-radius:8px;border:1px solid var(--border);margin-bottom:12px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;background:var(--panel);padding:12px 16px;border-radius:8px;border:1px solid var(--border);margin-bottom:10px;">
         <div>
           <h3 style="margin:0;font-size:16px;color:#f8fafc;display:flex;align-items:center;gap:8px;">
-            <span>🌐 Live Managed Chrome Browser &amp; Takeover</span>
+            <span>🌐 Live Managed Chrome Browser (Studio Brain &amp; Web Tools)</span>
             <span id="browser-live-badge" class="badge ok">CDP Port 9222 Connected</span>
           </h3>
-          <span style="font-size:12px;color:#94a3b8;" id="browser-live-url">Real Google Chrome Instance &bull; Session: default-chrome-cdp</span>
+          <span style="font-size:12px;color:#94a3b8;" id="browser-live-url">Persistent Chrome Profile &bull; Log in once and Studio retains all sessions</span>
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
-          <button class="primary" onclick="focusChromeWindow()" title="Bring Chrome window directly to front on Mac desktop" style="font-weight:600;">🖥 Bring Chrome to Front</button>
-          <button id="browser-auto-refresh-btn" onclick="toggleBrowserAutoRefresh()" style="background:#334155;">⏱ Auto-Refresh: 2s (ON)</button>
-          <button onclick="refreshBrowserView(true)" style="background:#334155;">🔄 Refresh Now</button>
-          <button id="browser-tab-takeover-btn" onclick="toggleTakeover()" style="background:#d97706;font-weight:600;">Owner Takeover</button>
+          <button class="primary" onclick="openBrowserTab('all')" style="background:#059669;border-color:#059669;font-weight:600;" title="Open ChatGPT, Gemini, Manus, Flow Music, CapCut Web, and YouTube Studio tabs in Chrome">🔑 Open All Login Tabs</button>
+          <button class="primary" onclick="focusChromeWindow()" title="Bring Chrome window directly to front on Linux desktop" style="font-weight:600;">🖥 Bring Chrome to Front</button>
+          <button id="browser-auto-refresh-btn" onclick="toggleBrowserAutoRefresh()" style="background:#334155;">⏱ Auto-Refresh: OFF</button>
+          <button onclick="refreshBrowserView(true)" style="background:#334155;">🔄 Snapshot Preview</button>
+          <button id="browser-tab-takeover-btn" onclick="toggleTakeover(true)" style="background:#d97706;font-weight:600;">✋ Takeover (Pause Polling)</button>
+          <button onclick="toggleTakeover(false)" style="background:#059669;font-weight:600;">▶ Resume Automation</button>
         </div>
       </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:10px;padding:8px 12px;background:#0b1120;border:1px solid var(--border);border-radius:6px;">
+        <span style="font-size:11px;color:#94a3b8;font-weight:600;margin-right:4px;">QUICK SWITCH TAB:</span>
+        <button onclick="openBrowserTab('https://chatgpt.com/')" style="background:#10b981;color:#fff;border:none;font-weight:600;">👑 ChatGPT</button>
+        <button onclick="openBrowserTab('https://gemini.google.com/app')" style="background:#2563eb;color:#fff;border:none;font-weight:600;">🔍 Gemini</button>
+        <button onclick="openBrowserTab('https://manus.im/app')" style="background:#d97706;color:#fff;border:none;font-weight:600;">🎯 Manus</button>
+        <button onclick="openBrowserTab('https://www.flowmusic.app/')" style="background:#7c3aed;color:#fff;border:none;font-weight:600;">🎵 Google Flow Music</button>
+        <button onclick="openBrowserTab('https://www.capcut.com/my-edit?start_tab=video')" style="background:#0284c7;color:#fff;border:none;font-weight:600;">🎬 CapCut Web Editor</button>
+        <button onclick="openBrowserTab('https://studio.youtube.com/')" style="background:#dc2626;color:#fff;border:none;font-weight:600;">📺 YouTube Studio</button>
+      </div>
       <div style="flex:1;min-height:560px;display:flex;align-items:center;justify-content:center;background:#050811;border:1px solid var(--border);border-radius:8px;overflow:auto;position:relative;">
-        <img id="browser-full-preview-img" src="/api/browser/preview?refresh=1" style="max-width:100%;max-height:100%;object-fit:contain;display:block;border-radius:4px;" alt="Full-Screen Managed Chrome Browser View" />
+        <img id="browser-full-preview-img" src="/api/browser/preview?refresh=0" style="max-width:100%;max-height:100%;object-fit:contain;display:block;border-radius:4px;" alt="Full-Screen Managed Chrome Browser View" />
         <div id="browser-loading-spinner" style="position:absolute;top:12px;right:12px;background:rgba(0,0,0,0.75);padding:6px 12px;border-radius:4px;font-size:12px;color:#60a5fa;display:none;border:1px solid #3b82f6;">Refreshing CDP capture...</div>
       </div>
     </div>
@@ -1495,7 +1491,7 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
         const convTitleEl = document.getElementById('conv-title');
         if (convTitleEl) convTitleEl.innerText = conv.title || activeConversationId;
         const provEl = document.getElementById('provider-select');
-        if (provEl) provEl.value = conv.active_provider_id || 'codex_cli';
+        if (provEl) provEl.value = conv.active_provider_id || 'chatgpt_web';
 
         if (data.active_skill) {
           currentActiveSkill = data.active_skill;
@@ -1511,23 +1507,6 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
             `).join('');
           }
         }
-
-      const ch02Wf = data.ch02_workflow || {};
-      const ch02Steps = ch02Wf.steps || {};
-      const ch02Html = ch02Wf.steps ? `
-        <div class="card" style="border-color:#3b82f6;margin-bottom:8px;">
-          <div style="display:flex;justify-content:space-between;align-items:center;">
-            <strong style="color:#60a5fa;">CH02 Audio Pipeline</strong>
-            <span class="badge ${ch02Wf.status === 'completed' ? 'ok' : 'warn'}">${ch02Wf.status || 'in_progress'}</span>
-          </div>
-          <div style="font-size:11px;color:#94a3b8;margin-top:2px;">Episode 002 / Chapter 02 (Color Garden)</div>
-          ${Object.entries(ch02Steps).map(([k, v]) => `
-            <div style="margin-top:5px;padding-top:4px;border-top:1px solid #334155;font-size:12px;">
-              <b>${k.replace('step_', '')}</b>: <span class="badge ${v.status === 'completed' ? 'ok' : 'warn'}">${v.status}</span>
-            </div>
-          `).join('')}
-        </div>
-      ` : '';
 
       const activeEp = conv.active_episode_id || '';
       let activeWfHtml = '';
@@ -1548,40 +1527,15 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
         activeWfHtml = `
           <div class="card" style="border: 1px dashed #3b82f6; background: rgba(59, 130, 246, 0.08);">
             <strong style="color:#60a5fa;">✨ Clean Production Workspace</strong><br/>
-            <span style="font-size:12px;color:#94a3b8;">No active episode running. Type an instruction in chat or reference <code>WorkingFlowTracker/</code> to begin.</span>
+            <span style="font-size:12px;color:#94a3b8;">No active episode running. Log in to your AI tabs in <b>🌐 Live Browser View</b>, then start a new episode in chat.</span>
           </div>
-        `;
-      }
-
-      let archiveHtml = '';
-      if (ch02Wf.steps || (wf.steps && !activeEp)) {
-        archiveHtml = `
-          <details class="card" style="background:#0b1120;border:1px solid #334155;cursor:pointer;padding:8px 10px;">
-            <summary style="font-weight:600;font-size:12px;color:#94a3b8;">📁 Historical Workflows Archive</summary>
-            <div style="margin-top:10px;">
-              ${ch02Html}
-              ${(!activeEp && wf.steps) ? `
-                <div class="card" style="margin-top:8px;">
-                  <strong>3-Agent Script Workflow (${wf.episode_id || 'EP03_COUNTING_FLOWERS'})</strong><br/>
-                  Status: <span class="badge ${wf.status === 'completed' ? 'ok' : 'warn'}">${wf.status || 'not_started'}</span>
-                  Version: <code>${wf.current_script_version || '-'}</code><br/>
-                  ${Object.entries(wfSteps).map(([k, v]) => `
-                    <div style="margin-top:5px;padding-top:4px;border-top:1px solid #334155;font-size:12px;">
-                      <b>${k}</b>: <span class="badge ${v.status === 'completed' ? 'ok' : 'warn'}">${v.status}</span>
-                    </div>
-                  `).join('')}
-                </div>
-              ` : ''}
-            </div>
-          </details>
         `;
       }
 
       const leftHtml = `
         ${activeWfHtml}
-        ${archiveHtml}
         <div class="card">
-          <strong>AI Providers</strong>
+          <strong>AI Providers (Live Browser Brain)</strong>
           ${(data.providers || []).map(p => `
             <div style="margin-top:6px;padding-top:6px;border-top:1px solid #334155;">
               <b>${p.display_name}</b><br/>
@@ -1596,7 +1550,8 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
           Mode: <span class="badge ${data.browser_takeover ? 'warn' : 'ok'}">${data.browser_takeover ? 'Owner Takeover Active' : 'Automation Active'}</span>
           <div style="margin-top:8px;display:flex;gap:5px;flex-wrap:wrap;">
             <button class="primary" onclick="switchMainTab('browser')" style="font-size:11px;padding:4px 8px;" title="Expand live Chrome view into main tab">⤢ Expand View</button>
-            <button onclick="focusChromeWindow()" style="font-size:11px;padding:4px 8px;" title="Bring Chrome to front on Mac desktop">🖥 Desktop</button>
+            <button onclick="openBrowserTab('all')" style="font-size:11px;padding:4px 8px;background:#059669;color:#fff;border:none;" title="Open all login tabs">🔑 Login Tabs</button>
+            <button onclick="focusChromeWindow()" style="font-size:11px;padding:4px 8px;" title="Bring Chrome to front on Linux desktop">🖥 Desktop</button>
             <button onclick="toggleTakeover(true)" style="font-size:11px;padding:4px 8px;">Takeover</button>
             <button onclick="toggleTakeover(false)" style="font-size:11px;padding:4px 8px;">Resume</button>
             <button onclick="captureBrowserPreview()" style="font-size:11px;padding:4px 8px;">Refresh</button>
@@ -1662,7 +1617,7 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
         </div>
       `;
       document.getElementById('right-panel').innerHTML = rightHtml;
-      renderLiveTracker(wf, ch02Wf);
+      renderLiveTracker(wf, {});
       } catch (err) {
         console.error("Error in refreshState:", err);
       }
@@ -1685,9 +1640,6 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
         loadFilesExplorer();
       } else if (tab === 'browser') {
         refreshBrowserView(true);
-        if (!browserAutoRefreshInterval) {
-          toggleBrowserAutoRefresh();
-        }
       } else if (tab === 'skills') {
         refreshSkills();
       } else if (tab === 'cron') {
@@ -1907,7 +1859,7 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
         if (btn) btn.innerText = '⏱ Auto-Refresh: OFF';
       } else {
         browserAutoRefreshInterval = setInterval(() => {
-          refreshBrowserView(false);
+          refreshBrowserView(true);
         }, 2000);
         if (btn) btn.innerText = '⏱ Auto-Refresh: 2s (ON)';
       }
@@ -1934,6 +1886,32 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
         }
       } catch (err) {
         alert('Desktop focus error: ' + err);
+      }
+    }
+
+    async function openBrowserTab(urlOrMode) {
+      try {
+        if (browserAutoRefreshInterval) {
+          clearInterval(browserAutoRefreshInterval);
+          browserAutoRefreshInterval = null;
+          const btn = document.getElementById('browser-auto-refresh-btn');
+          if (btn) btn.innerText = '⏱ Auto-Refresh: OFF';
+        }
+        const spinner = document.getElementById('browser-loading-spinner');
+        if (spinner) {
+          spinner.innerText = urlOrMode === 'all' ? 'Opening all login tabs in Chrome (Takeover Active)...' : `Switching Chrome tab to ${urlOrMode}...`;
+          spinner.style.display = 'block';
+        }
+        await fetch('/api/browser/open-tab', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ url: urlOrMode })
+        });
+        await refreshBrowserView(true);
+        setTimeout(() => { if (spinner) spinner.style.display = 'none'; }, 600);
+        await refreshState();
+      } catch (err) {
+        alert('Could not open browser tab: ' + err);
       }
     }
 
@@ -2214,6 +2192,12 @@ STUDIO_INDEX_HTML = """<!DOCTYPE html>
     }
 
     async function toggleTakeover(enable) {
+      if (enable && browserAutoRefreshInterval) {
+        clearInterval(browserAutoRefreshInterval);
+        browserAutoRefreshInterval = null;
+        const btn = document.getElementById('browser-auto-refresh-btn');
+        if (btn) btn.innerText = '⏱ Auto-Refresh: OFF';
+      }
       await fetch('/api/browser/takeover', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
@@ -2489,7 +2473,6 @@ def create_studio_app(policy: RootPolicy | None = None) -> Starlette:
         providers = await asyncio.to_thread(orchestrator.providers.check_providers_health)
         ep_id = conv.get("active_episode_id")
         wf_manifest = orchestrator.workflow.load_manifest(ep_id) if ep_id else {}
-        ch02_manifest = orchestrator.workflow.load_manifest("EP02_CH02_AUDIO")
         return JSONResponse(
             {
                 "conversation": conv,
@@ -2501,7 +2484,7 @@ def create_studio_app(policy: RootPolicy | None = None) -> Starlette:
                 "browser_takeover": orchestrator.browser.owner_takeover,
                 "mac_actions": orchestrator.store.list_mac_actions(conv["conversation_id"]),
                 "workflow": wf_manifest,
-                "ch02_workflow": ch02_manifest,
+                "ch02_workflow": {},
                 "cancel_event_set": orchestrator.cancel_event.is_set(),
                 "episode_memories": orchestrator.store.list_episode_memories(),
                 "kids_channel_standard": KIDS_CHANNEL_STYLE_STANDARD,
@@ -2544,7 +2527,7 @@ def create_studio_app(policy: RootPolicy | None = None) -> Starlette:
 
     async def api_chat(request: Request) -> JSONResponse:
         body = await request.json()
-        cid = str(body.get("conversation_id") or "conv-e02-ch01-main")
+        cid = str(body.get("conversation_id") or "conv-main")
         msg = str(body.get("message") or "").strip()
         prov = body.get("provider_id")
         action = body.get("action")
@@ -2561,7 +2544,7 @@ def create_studio_app(policy: RootPolicy | None = None) -> Starlette:
 
     async def api_browser_takeover(request: Request) -> JSONResponse:
         body = await request.json()
-        cid = str(body.get("conversation_id") or "conv-e02-ch01-main")
+        cid = str(body.get("conversation_id") or "conv-main")
         enable = bool(body.get("enable", True))
         if enable:
             res = await asyncio.to_thread(orchestrator.browser.enter_owner_takeover, conversation_id=cid)
@@ -2569,18 +2552,36 @@ def create_studio_app(policy: RootPolicy | None = None) -> Starlette:
             res = await asyncio.to_thread(orchestrator.browser.resume_from_takeover, conversation_id=cid)
         return JSONResponse(res)
 
+    async def api_browser_open_tab(request: Request) -> JSONResponse:
+        body = await request.json()
+        url = str(body.get("url") or "all").strip()
+        if url == "all":
+            res = await asyncio.to_thread(orchestrator.browser.open_login_workspace_tabs)
+        else:
+            res = await asyncio.to_thread(orchestrator.browser.open_or_focus_tab, url)
+        return JSONResponse(res)
+
+    async def api_browser_check_logins(request: Request) -> JSONResponse:
+        res = await asyncio.to_thread(orchestrator.browser.check_workspace_logins)
+        return JSONResponse(res)
+
     async def api_browser_preview(request: Request):
         refresh = request.query_params.get("refresh") == "1"
         captures_dir = orchestrator.browser.captures_dir
-        if refresh and orchestrator.browser.is_reachable():
+        captures_dir.mkdir(parents=True, exist_ok=True)
+        existing_pngs = sorted(captures_dir.glob("*.png"), key=lambda p: p.stat().st_mtime, reverse=True)
+        # Passive screenshot (bring_to_front=False) never steals window focus or reloads pages
+        if refresh or not existing_pngs:
             try:
                 shot = await asyncio.to_thread(
                     orchestrator.browser.capture_screenshot,
                     "studio_live_preview.png",
+                    bring_to_front=False,
+                    record_task=False,
                 )
                 return FileResponse(shot["path"], media_type="image/png")
-            except Exception:
-                pass
+            except Exception as exc:
+                print(f"[browser preview] capture failed: {exc}")
         pngs = sorted(captures_dir.glob("*.png"), key=lambda p: p.stat().st_mtime, reverse=True)
         if pngs:
             return FileResponse(str(pngs[0]), media_type="image/png")
@@ -2594,6 +2595,7 @@ def create_studio_app(policy: RootPolicy | None = None) -> Starlette:
         body = await request.json()
         cid = str(body.get("conversation_id") or "conv-main")
         orchestrator.store.clear_conversation(cid)
+        orchestrator.browser.clear_session_urls()
         return JSONResponse({"status": "cleared", "conversation_id": cid})
 
     async def api_image(request: Request):
@@ -2821,6 +2823,10 @@ def create_studio_app(policy: RootPolicy | None = None) -> Starlette:
                 return JSONResponse({"status": "dispatched", "turn": turn, "job_id": job_id})
             return JSONResponse({"error": "Unknown action"}, status_code=400)
 
+    async def api_resolve_status(request: Request) -> JSONResponse:
+        status = await asyncio.to_thread(orchestrator.resolve.get_status)
+        return JSONResponse(status)
+
     app = Starlette(
         routes=[
             Route("/", index_page, methods=["GET"]),
@@ -2828,7 +2834,10 @@ def create_studio_app(policy: RootPolicy | None = None) -> Starlette:
             Route("/api/state", api_state, methods=["GET"]),
             Route("/api/chat", api_chat, methods=["POST"]),
             Route("/api/chat/clear", api_chat_clear, methods=["POST"]),
+            Route("/api/resolve/status", api_resolve_status, methods=["GET"]),
             Route("/api/browser/takeover", api_browser_takeover, methods=["POST"]),
+            Route("/api/browser/open-tab", api_browser_open_tab, methods=["POST"]),
+            Route("/api/browser/check-logins", api_browser_check_logins, methods=["GET"]),
             Route("/api/browser/preview", api_browser_preview, methods=["GET"]),
             Route("/api/browser/focus", api_browser_focus, methods=["POST"]),
             Route("/api/skills", api_skills, methods=["GET", "POST"]),

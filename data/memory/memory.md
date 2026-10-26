@@ -15,4 +15,6 @@
 - *Rule 001:* Never trim silence without inspecting actual speech onset boundaries.
 - *Rule 002:* Always duck background soundtrack under voiceover.
 - *Rule 003:* On publishing an episode, archive master files to permanent library and purge intermediate scratch takes.
+- *Rule 004 (Strict Biological Purity & Single-Asset Isolation):* In AI image generation for educational videos, never prompt multiple distinct animal species in the same scene or image. Always generate each animal as an isolated, single-subject PNG cutout on transparent or pure white background with strict biological purity guardrails. Never create chimeras, hybrids, or cross-blended species (e.g. no sheep with duck bills, no feathered sheep, no woolly ducks). Scene assemblies with multiple animals must always be composited as separate layers in the video editor (Resolve/CapCut/Codex), never generated as a single blended image.
+
 

@@ -42,8 +42,13 @@ class CapCutAdapter:
         else:
             # Linux (Debian 13 / WINE / Flatpak / Web)
             candidate = Path.home() / ".local" / "share" / "CapCut" / "Projects"
-            candidate.mkdir(parents=True, exist_ok=True)
-            return candidate
+            try:
+                candidate.mkdir(parents=True, exist_ok=True)
+                return candidate
+            except OSError:
+                fallback = self.policy.output_root_resolved / "capcut-projects"
+                fallback.mkdir(parents=True, exist_ok=True)
+                return fallback
 
     def is_installed(self) -> bool:
         """Returns True if CapCut desktop directories or executable exist on this machine."""
